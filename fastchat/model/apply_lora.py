@@ -1,6 +1,6 @@
 """
 Apply the LoRA weights on top of a base model.
-
+使用peft的PeftModel类的merge_and_unload()方法合并base模型权重和lora权重。
 Usage:
 python3 -m fastchat.model.apply_lora --base ~/model_weights/llama-7b --target ~/model_weights/baize-7b --lora project-baize/baize-lora-7B
 
@@ -15,6 +15,14 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 def apply_lora(base_model_path, target_model_path, lora_path):
+    """使用peft的PeftModel类的merge_and_unload()方法合并base模型权重和lora权重。
+       tokenizer仍使用base model的tokenizer.
+
+    Args:
+        base_model_path (_type_): base模型的路径
+        target_model_path (_type_): 合并后权重的存储路径
+        lora_path (_type_): lora权重的路径
+    """
     print(f"Loading the base model from {base_model_path}")
     base = AutoModelForCausalLM.from_pretrained(
         base_model_path, torch_dtype=torch.float16, low_cpu_mem_usage=True

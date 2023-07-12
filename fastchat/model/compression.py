@@ -31,10 +31,14 @@ default_compression_config = CompressionConfig(
 
 
 class CLinear(nn.Module):
-    """Compressed Linear Layer."""
+    """Compressed Linear Layer.
+
+    """
 
     def __init__(self, weight=None, bias=None, device=None):
         super().__init__()
+        # 1. 只对weight进行压缩，不对bias进行压缩
+        # 2. 量化反量化的机制是：初始化时进行量化，前向传播时再反量化
         if weight is None:
             self.weight = None
         elif isinstance(weight, Tensor):
@@ -51,6 +55,12 @@ class CLinear(nn.Module):
 
 
 def compress_module(module, target_device):
+    """将module的每个线性层变为CLinear层，把模块所有子孙模块中的线性层也递归变为Clinear层
+
+    Args:
+        module (_type_): 模型的模块
+        target_device (_type_): 指定的设备
+    """
     for attr_str in dir(module):
         target_attr = getattr(module, attr_str)
         if type(target_attr) == torch.nn.Linear:
@@ -64,6 +74,15 @@ def compress_module(module, target_device):
 
 
 def get_compressed_list(module, prefix=""):
+    """返回给定的module所有的线性层，以及子孙module的线性层的层名
+
+    Args:
+        module (_type_): _description_
+        prefix (str, optional): _description_. Defaults to "".
+
+    Returns:
+        _type_: _description_
+    """
     compressed_list = []
     for attr_str in dir(module):
         target_attr = getattr(module, attr_str)
@@ -80,6 +99,16 @@ def get_compressed_list(module, prefix=""):
 
 
 def apply_compressed_weight(module, compressed_state_dict, target_device, prefix=""):
+    """针对`module`中的每个线性层和子孙module的线性层，取出compressed_state_dict的权重，
+       将其转换为CLinear，作为module.attr_str的权重。
+       该函数可以用于对无权重的模型，使用有权重的模型进行量化及初始化，似乎亦可用于delta操作。
+
+    Args:
+        module (_type_): 待量化的模块
+        compressed_state_dict (_type_): 与`module`层属性相同具有权重的模块
+        target_device (_type_): 目标设备
+        prefix (str, optional): 层名的前缀字符. Defaults to "".
+    """
     for attr_str in dir(module):
         target_attr = getattr(module, attr_str)
         if type(target_attr) == torch.nn.Linear:
@@ -101,11 +130,25 @@ def apply_compressed_weight(module, compressed_state_dict, target_device, prefix
 
 
 def load_compress_model(model_path, device, torch_dtype, use_fast, revision="main"):
+    """先初始化一个无权重的模型，然后加载检查点文件，将其中的线性层权重转换为CLinear层，
+        非线性层仍保持无权重，一起传输到指定设备上
+
+    Args:
+        model_path (_type_): _description_
+        device (_type_): _description_
+        torch_dtype (_type_): _description_
+        use_fast (_type_): _description_
+        revision (str, optional): _description_. Defaults to "main".
+
+    Returns:
+        _type_: _description_
+    """
     # partially load model
+    # 1. 加载模型的tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, use_fast=use_fast, revision=revision
     )
-
+    # 2. 初始化一个无权重的模型，找出其中所有的线性层
     with init_empty_weights():
         config = AutoConfig.from_pretrained(
             model_path,
@@ -115,7 +158,7 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
         )
         model = AutoModelForCausalLM.from_config(config)
         linear_weights = get_compressed_list(model)
-
+    # 3. 找出模型的所有bin文件
     if os.path.exists(model_path):
         # `model_path` is a local folder
         base_pattern = os.path.join(model_path, "pytorch_model*.bin")
@@ -127,6 +170,7 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
     files = glob.glob(base_pattern)
 
     compressed_state_dict = {}
+    # 4. 遍历所有的文件，针对文件的每个线性层的权重，执行量化操作，将所有层记录到compressed_state_dict
 
     for filename in tqdm(files):
         tmp_state_dict = torch.load(filename)
@@ -142,12 +186,13 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
             tensor = None
             gc.collect()
             torch.cuda.empty_cache()
-
+    # 5. 将模型的非线性层传输至device上
     for name in model.state_dict():
         if name not in linear_weights:
             set_module_tensor_to_device(
                 model, name, device, value=compressed_state_dict[name]
             )
+    # 6. 将模型的线性层的权重设为权重检查点文件量化后的权重
     apply_compressed_weight(model, compressed_state_dict, device)
 
     model.to(device)
@@ -156,7 +201,9 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
 
 
 def compress(tensor, config):
-    """Simulate group-wise quantization."""
+    """Simulate group-wise quantization.
+
+    """
     if not config.enabled:
         return tensor
 
@@ -167,16 +214,19 @@ def compress(tensor, config):
         config.symmetric,
     )
     assert num_bits <= 8
-
+    # 取出权重的shape, 然后沿group_dim按group_size分组，计算分组数
     original_shape = tensor.shape
     num_groups = (original_shape[group_dim] + group_size - 1) // group_size
+    # 例如tensor为2维的(m,n)张量，group_dim=1,则new_shape=(m,num_groups,group_size,n)
     new_shape = (
         original_shape[:group_dim]
         + (num_groups, group_size)
         + original_shape[group_dim + 1 :]
     )
 
-    # Pad
+    # Pad,将tensor用0补齐至可以view到new_shape
+    # 如上，pad_len = (group_size-m%group_size)%group_size = k
+    # 
     pad_len = (group_size - original_shape[group_dim] % group_size) % group_size
     if pad_len != 0:
         pad_shape = (
@@ -188,7 +238,9 @@ def compress(tensor, config):
         )
     data = tensor.view(new_shape)
 
-    # Quantize
+    # Quantize，分组计算scale，执行量化操作，
+    # 如果是对称量化，返回量化后的数据，每组的scale,和原始的shape
+    # 如果是非对称量化，返回量化后的数据，每组的最小值，每组的scale,和原始的shape
     if symmetric:
         B = 2 ** (num_bits - 1) - 1
         scale = B / torch.max(data.abs(), dim=group_dim + 1, keepdim=True)[0]
@@ -209,7 +261,9 @@ def compress(tensor, config):
 
 
 def decompress(packed_data, config):
-    """Simulate group-wise dequantization."""
+    """Simulate group-wise dequantization.
+    执行反量化操作，尽量返回原始数据
+    """
     if not config.enabled:
         return packed_data
 
