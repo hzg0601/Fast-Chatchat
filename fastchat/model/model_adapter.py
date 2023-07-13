@@ -1,4 +1,16 @@
-"""Model adapter registration."""
+"""Model adapter registration.
+本项目的adapter是一个控制模型加载和获取默认prompt模板的类，
+包括match,load_model,load_compress_model,get_default_conv_template等方法
+match: 判断给定的model_path中是否包含给定的模型的名字，用于配合get_model_adapter函数
+load_model: 加载model和tokenizer，model和tokenizer的model_path一致
+load_compress_model: 加载时量化model,返回量化后的模型和tokenizer
+get_default_conv_template: 返回默认的对话模板
+
+# 定义新的Adapter一般需要自定义load_model，match, get_default_conv_template
+# load_model需要确定AutoTokenizer,AutoModel类
+# get_default_conv_template通过get_conv_template函数加载默认模板，需要确定模板的样式
+# 自定义或者选择基样式
+"""
 
 import math
 import sys
@@ -42,7 +54,10 @@ peft_share_base_weights = (
     os.environ.get("PEFT_SHARE_BASE_WEIGHTS", "false").lower() == "true"
 )
 
-
+""" 
+BaseModelAdapter 调用AutoTokenizer，AutoModelForCausalLM类加载到内存中，
+它的子类再调用load_model函数接受各种参数执行加载到device,进行量化等操作
+"""
 class BaseModelAdapter:
     """The base and the default model adapter."""
 
@@ -223,7 +238,7 @@ def load_model(
     kwargs["revision"] = revision
 
     # Load model
-    adapter = get_model_adapter(model_path)
+    # adapter = get_model_adapter(model_path)
     model, tokenizer = adapter.load_model(model_path, kwargs)
 
     if (device == "cuda" and num_gpus == 1 and not cpu_offloading) or device == "mps":
@@ -245,7 +260,7 @@ def get_conversation_template(model_path: str) -> Conversation:
     adapter = get_model_adapter(model_path)
     return adapter.get_default_conv_template(model_path)
 
-
+#? model_path如果是peft模型的路径，base模型的路径在哪里定义？-> model就是已经加载好的base模型
 def get_generate_stream_function(model: torch.nn.Module, model_path: str):
     """Get the generate_stream function for inference."""
     from fastchat.serve.inference import generate_stream
@@ -261,6 +276,7 @@ def get_generate_stream_function(model: torch.nn.Module, model_path: str):
         return generate_stream_falcon
     elif is_codet5p:
         return generate_stream_codet5p
+    #*--- peft_share_base_weights是一个全局变量，True or False, 默认为False--------
     elif peft_share_base_weights and "peft" in model_path:
         # Return a curried stream function that loads the right adapter
         # according to the model_name available in this context.  This ensures
@@ -275,6 +291,8 @@ def get_generate_stream_function(model: torch.nn.Module, model_path: str):
             stream_interval: int = 2,
             judge_sent_end: bool = False,
         ):
+            #? 定义set_adapter方法的地方在哪里
+            # 该方法必然执行了合并操作
             model.set_adapter(model_path)
             for x in generate_stream(
                 model,
@@ -367,7 +385,8 @@ def remove_parent_directory_name(model_path):
 
 peft_model_cache = {}
 
-
+# model path必须是peft模型的path，
+# 且model_path通过PeftConfig.from_pretrained加载后必须包含base_model_name_or_path
 class PeftModelAdapter:
     """Loads any "peft" model and it's base model."""
 
@@ -378,7 +397,7 @@ class PeftModelAdapter:
     def load_model(self, model_path: str, from_pretrained_kwargs: dict):
         """Loads the base model then the (peft) adapter weights"""
         from peft import PeftConfig, PeftModel
-
+        # model_path中必须包含base_model_name_or_path
         config = PeftConfig.from_pretrained(model_path)
         base_model_path = config.base_model_name_or_path
         if "peft" in base_model_path:
@@ -397,6 +416,18 @@ class PeftModelAdapter:
         #  4. In get_generate_stream_function, make sure we load the right
         #  adapter before doing inference.  This *should* be safe when calls
         #  are blocked the same semaphore.
+        # 如果是全局共享的peft和base_weights，
+        # 且base_model_path在全局共享的peft_model_cache字典中，
+        # 则直接按base_model_path加载model,tokenizer,调用model的load_adapter方法加载model权重
+
+        # 如果base_model_path不在全局共享的peft_model_cache字典中，
+        # 则根据base_model_path加载base_adapter,调用Adapter.load_model方法加载model权重和tokenizer，
+        # 再调用PeftModel.from_pretrained方法合并模型权重，并将model,tokenizer保存到peft_model_cache中
+
+        # 如果没有全局共享peft和base_weights，则根据base_model_path加载模型的Adapter,
+        # 然后调用Adapter.load_model方法加载model权重和tokenizer,再调用PeftModel
+        # 合并模型权重
+        #? peft_model_cache中的model必须定义load_adapter方法
         if peft_share_base_weights:
             if base_model_path in peft_model_cache:
                 model, tokenizer = peft_model_cache[base_model_path]
@@ -437,7 +468,10 @@ class PeftModelAdapter:
         base_adapter = get_model_adapter(base_model_path)
         return base_adapter.get_default_conv_template(config.base_model_name_or_path)
 
-
+# 定义新的Adapter一般需要自定义load_model，match, get_default_conv_template
+# load_model需要确定AutoTokenizer,AutoModel类
+# get_default_conv_template通过get_conv_template函数加载默认模板，需要确定模板的样式
+# 自定义或者选择基样式
 class VicunaAdapter(BaseModelAdapter):
     "Model adapater for Vicuna models (e.g., lmsys/vicuna-7b-v1.3)" ""
 
@@ -458,7 +492,8 @@ class VicunaAdapter(BaseModelAdapter):
         )
         self.raise_warning_for_old_weights(model)
         return model, tokenizer
-
+    # 返回一个conversation.Conversation类，该类定义了get_prompt，append_message，update_last_message，to_gradio_chatbot等方法
+    # to_openai_api_messages，dict,copy等方法
     def get_default_conv_template(self, model_path: str) -> Conversation:
         if "v0" in remove_parent_directory_name(model_path):
             return get_conv_template("one_shot")
