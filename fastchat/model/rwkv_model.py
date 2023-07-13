@@ -1,3 +1,6 @@
+""" 为rwkv定义了generate方法，使用的tokenizer是EleutherAI/pythia-160m，
+    generate方法实现是基于fastchat.serve.inference.stream_generate函数
+"""
 import os
 from types import SimpleNamespace
 import warnings

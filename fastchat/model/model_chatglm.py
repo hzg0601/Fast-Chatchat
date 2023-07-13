@@ -13,6 +13,7 @@ class InvalidScoreLogitsProcessor(LogitsProcessor):
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor
     ) -> torch.FloatTensor:
         if torch.isnan(scores).any() or torch.isinf(scores).any():
+            # inplace类操作，将所有元素的值置为0，将第五个token的得分置为5e4
             scores.zero_()
             scores[..., 5] = 5e4
         return scores
@@ -36,7 +37,9 @@ def process_response(response):
         response = re.sub(r"%s([\u4e00-\u9fff])" % item[0], r"%s\1" % item[1], response)
     return response
 
-
+# This context manager is thread local; it will not affect computation in other threads.
+# analogous to ~no_grad
+# disabling view tracking and version counter bumps
 @torch.inference_mode()
 def generate_stream_chatglm(
     model,
@@ -68,6 +71,7 @@ def generate_stream_chatglm(
         gen_kwargs["temperature"] = temperature
 
     total_len = 0
+    #? 为什么不直接调用stream_chat接口？因为不想记录历史问答记录吗
     for total_ids in model.stream_generate(**inputs, **gen_kwargs):
         total_ids = total_ids.tolist()[0]
         total_len = len(total_ids)

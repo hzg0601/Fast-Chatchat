@@ -1,3 +1,9 @@
+"""
+1. codet5的调用使用了多线程
+2. 调用的是codet5的generate方法
+3. 没有规定InvalidScoreLogitsProcessor，但规定了
+    StoppingCriteriaList([CodeBlockStopper()])
+"""
 import gc
 from threading import Thread
 import torch
@@ -32,6 +38,8 @@ def generate_stream_codet5p(
     stop_token_ids.append(tokenizer.eos_token_id)
 
     decode_config = dict(skip_special_tokens=True, clean_up_tokenization_spaces=True)
+    # Streamer 将打印就绪文本存储在队列中，供下游应用程序用作迭代器。 
+    # 适用于对以非阻塞方式访问生成的文本的应用程序
     streamer = TextIteratorStreamer(tokenizer, **decode_config)
     encoding = tokenizer(prompt, return_tensors="pt").to(device)
     input_ids = encoding.input_ids

@@ -1,6 +1,7 @@
 """
 Monkey patch the llama implementation in the huggingface/transformers library.
 Avoid bugs in mps backend by not using in-place operations.
+为mps设备下基于ROPE的attention机制打的补丁，mps下transformers的实现会因为in-place操作而失败
 """
 import math
 from typing import List, Optional, Tuple

@@ -1,3 +1,9 @@
+""" 
+1. 模式与codet5的基本类似，但falcon可以自定义停止词，并根据停止词的
+    的检测确定是否yield返回，而codet5用
+    stopping_criteria=StoppingCriteriaList([CodeBlockStopper()])
+    作为停止条件。
+"""
 import gc
 from threading import Thread
 from typing import Iterable
@@ -66,7 +72,7 @@ def generate_stream_falcon(
 
     thread = Thread(target=model.generate, kwargs=generation_kwargs)
     thread.start()
-
+    # echo表示记录输入的prompt,故rfind_start=len_prompt
     if echo:
         # means keep the prompt
         output = prompt
@@ -82,12 +88,20 @@ def generate_stream_falcon(
                 rfind_start = 0
 
             partially_stopped = False
+            # 如果规定了停止词，停止词可以是str也可以是str的列表
+                # 在输出中从模型回答的位置用rfind检索停止词的位置，
+                # 如果位置不为-1，只返回停止词之前的内容，但partially_stopped仍为False
+                # 如果位置为-1，则调用is_partial_stop判断是否输出的尾部
+                # len(stop_str)个字符是否包含stop_str的部分字符
+                # 将判断的结果返回给partially_stopped,即如果检测到，partially_stopped为True
+                # 如果没有检测到partially_stopped仍为False
             if stop_str:
                 if isinstance(stop_str, str):
                     pos = output.rfind(stop_str, rfind_start)
                     if pos != -1:
                         output = output[:pos]
                     else:
+                        # is_partial_stop：Check whether the output contains a partial stop str.
                         partially_stopped = is_partial_stop(output, stop_str)
                 elif isinstance(stop_str, Iterable):
                     for each_stop in stop_str:
@@ -103,6 +117,8 @@ def generate_stream_falcon(
                     raise ValueError("Invalid stop field type.")
 
             # prevent yielding partial stop sequence
+            # 如果output的尾部没有检测到停止词的部分字符，则yield结果
+            #? 如果检测到呢？就不yield结果？
             if not partially_stopped:
                 yield {
                     "text": output,

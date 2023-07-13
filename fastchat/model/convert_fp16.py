@@ -1,4 +1,5 @@
 """
+将模型加载，然后以float16的格式存储
 Usage:
 python3 -m fastchat.model.convert_fp16 --in in-folder --out out-folder
 """

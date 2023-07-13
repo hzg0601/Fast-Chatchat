@@ -23,7 +23,10 @@ def get_model_info(name: str) -> ModelInfo:
 
 
 register_model_info(
-    ["gpt-4"], "ChatGPT-4", "https://openai.com/research/gpt-4", "ChatGPT-4 by OpenAI"
+    ["gpt-4"], 
+    "ChatGPT-4", 
+    "https://openai.com/research/gpt-4", 
+    "ChatGPT-4 by OpenAI"
 )
 register_model_info(
     ["gpt-3.5-turbo"],
