@@ -1,3 +1,8 @@
+""" 1. 使用llama的load_quant加载gptq模型,
+需要预先源码安装https://github.com/qwopqwop200/GPTQ-for-LLaMa.git
+放到repositories目录下,但该方法要求的torch的cuda版本和gun-gcc版本要较严格的匹配，
+会导致较麻烦的安装问题
+"""
 from dataclasses import dataclass, field
 import os
 from os.path import isdir, isfile
@@ -34,6 +39,7 @@ def load_gptq_quantized(model_name, gptq_config: GptqConfig):
         module_path = os.path.join(script_path, "../repositories/GPTQ-for-LLaMa")
 
         sys.path.insert(0, module_path)
+        #? 用llama的方法import? 为什么不用 
         from llama import load_quant
     except ImportError as e:
         print(f"Error: Failed to load GPTQ-for-LLaMa. {e}")

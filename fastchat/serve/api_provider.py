@@ -1,4 +1,7 @@
-"""Call API providers."""
+"""Call API providers.
+openai,anthropic,bard,palm的流式对话接口函数
+对bard的支持还不完善，对palm人为引入了延迟
+"""
 
 import os
 import random

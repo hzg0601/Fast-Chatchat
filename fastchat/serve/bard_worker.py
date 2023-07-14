@@ -1,5 +1,6 @@
 """
 Adapted from https://github.com/acheong08/Bard.
+bard的本地api服务，即在本地起一个服务，通过post方法与谷歌的bard交互
 """
 import argparse
 import json
@@ -51,11 +52,19 @@ class Chatbot:
             "Origin": "https://bard.google.com",
             "Referer": "https://bard.google.com/",
         }
+        # An asynchronous HTTP client, with connection pooling, HTTP/2, redirects,cookie persistence, etc.
+        # 
         self.session = httpx.AsyncClient()
         self.session.headers = headers
+        # Cookie，有时也用其复数形式 Cookies。类型为“小型文本文件”，是某些网站为了辨别用户身份，
+        # 进行Session跟踪而储存在用户本地终端上的数据（通常经过加密），由用户客户端计算机暂时或永久保存的信息
+        # 当客户机再次访问这个 Web 文档时这些信息可供该文档使用。由于“Cookie”具有可以保存在客户机上的神奇特性, 
+        # 因此它可以帮助我们实现记录用户个人信息的功能, 而这一切都不必使用复杂的CGI等程序 [2] 。
+        # 举例来说, 一个 Web 站点可能会为每一个访问者产生一个唯一的ID, 然后以 Cookie 文件的形式保存在每个用户的机器上。
         self.session.cookies.set("__Secure-1PSID", session_id)
         self.SNlM0e = None
 
+    # 测试能否访问bard，如果能够访问，则返回文本中会包含SN1M0e:字段，匹配并返回
     async def _get_snlm0e(self):
         resp = await self.session.get(url="https://bard.google.com/", timeout=10)
         # Find "SNlM0e":"<ID>"
@@ -63,7 +72,7 @@ class Chatbot:
             raise Exception("Could not get Google Bard")
         SNlM0e = re.search(r"SNlM0e\":\"(.*?)\"", resp.text).group(1)
         return SNlM0e
-
+    # 
     async def ask(self, message: Message) -> Response:
         """
         Send a message to Google Bard and return the response.
@@ -97,6 +106,8 @@ class Chatbot:
         }
 
         # do the request!
+        # 先定义会话的id，然后定义url的参数，包括bl,_reqid,rt三个字段，_reqid即前序的会话id
+        # 然后定义message_struct,将message_struct定义为data字典，字段依次为f.req,at
         resp = await self.session.post(
             "https://bard.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate",
             params=params,
@@ -132,10 +143,13 @@ class Chatbot:
 app = FastAPI()
 chatbot = None
 
-
+# on_event("startup"),定义在启动时的动作
+# on_event("shutdown"),定义在结束时的动作
 @app.on_event("startup")
 async def startup_event():
     global chatbot
+    # 从bard_cookie.json中读取cokie信息，将__Secure-1PSID的值作为ssession_id，
+    # 以初始化Chatbot，测试能否访问bard，如果能够访问，则返回文本中会包含SN1M0e:字段，匹配并返回
     cookie = json.load(open("bard_cookie.json"))
     chatbot = Chatbot(cookie["__Secure-1PSID"])
     chatbot.SNlM0e = await chatbot._get_snlm0e()

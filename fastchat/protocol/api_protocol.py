@@ -1,3 +1,4 @@
+"""规定api返回类的格式"""
 from typing import Literal, Optional, List, Dict, Any, Union
 
 import time

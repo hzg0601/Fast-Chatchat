@@ -47,7 +47,9 @@ class UsageInfo(BaseModel):
     total_tokens: int = 0
     completion_tokens: Optional[int] = 0
 
-
+# # 名称不同->API,
+# openai-api中没有presence_penalty,freqency_penalty,
+# 但有repetition_penalty
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: Union[str, List[Dict[str, str]]]
@@ -100,17 +102,17 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: List[ChatCompletionResponseStreamChoice]
 
-
+# 名称不同-API
 class TokenCheckRequestItem(BaseModel):
     model: str
     prompt: str
     max_tokens: int
 
-
+# 名称不同-API
 class TokenCheckRequest(BaseModel):
     prompts: List[TokenCheckRequestItem]
 
-
+# 名称不同-API
 class TokenCheckResponseItem(BaseModel):
     fits: bool
     tokenCount: int
@@ -119,7 +121,7 @@ class TokenCheckResponseItem(BaseModel):
 
 class TokenCheckResponse(BaseModel):
     prompts: List[TokenCheckResponseItem]
-
+# openai_api_protocol.py里没有的类
 
 class EmbeddingsRequest(BaseModel):
     model: Optional[str] = None
@@ -127,7 +129,7 @@ class EmbeddingsRequest(BaseModel):
     input: Union[str, List[Any]]
     user: Optional[str] = None
 
-
+# openai_api_protocol.py里没有的类
 class EmbeddingsResponse(BaseModel):
     object: str = "list"
     data: List[Dict[str, Any]]

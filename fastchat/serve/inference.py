@@ -52,7 +52,12 @@ def prepare_logits_processor(
         processor_list.append(TopKLogitsWarper(top_k))
     return processor_list
 
-
+# 完全用model的原始方法进行推理
+# 对于encode_decoder模型，调用decoder得到输出，然后用lm_head得到logits
+# 对于decoder模型，调用forward方法得到输出out,然后out.logits得到最终的logits
+# 然后用softmax,multinomial得到最终的token id
+# 然后用tokenizer.decode得到字符，并判断 partially_stopped 字段
+# 根据partially_stopped,yield最终的输出
 @torch.inference_mode()
 def generate_stream(
     model,
@@ -184,7 +189,8 @@ def generate_stream(
                 spaces_between_special_tokens=False,
                 clean_up_tokenization_spaces=True,
             )
-            # TODO: For the issue of incomplete sentences interrupting output, apply a patch and others can also modify it to a more elegant way
+            # TODO: For the issue of incomplete sentences interrupting output, 
+            # TODO apply a patch and others can also modify it to a more elegant way
             if judge_sent_end and stopped and not is_sentence_complete(output):
                 if len(tokens) > 1:
                     token = tokens[1]
@@ -255,7 +261,8 @@ def generate_stream(
     gc.collect()
     torch.cuda.empty_cache()
 
-
+# Abstract Base Classes (ABCs) according to PEP 3119.
+# 包含三个抽象方法,prompt_for_input,prompt_for_output,stream_output
 class ChatIO(abc.ABC):
     @abc.abstractmethod
     def prompt_for_input(self, role: str) -> str:
@@ -269,6 +276,15 @@ class ChatIO(abc.ABC):
     def stream_output(self, output_stream):
         """Stream output."""
 
+# chat的pipeline
+# 1.加载模型
+# 2. 根据模型加载stream function
+# 3. 如果给定了conv_template字段，则调用conversation.py加载对话模板；
+#    否则调用model_adapter.py的对应函数通过model_path加载对话模板；
+# 4. 调用chatio.prompt_for_input(conv.roles[0])和模板生成input prompt
+# 5. 调用stream function，基于input prompt和生成config得到输出output_stream
+# 6. chatio.stream_output(output_stream)得分最终的输出
+# 7. 更新对话模板conv.
 
 def chat_loop(
     model_path: str,

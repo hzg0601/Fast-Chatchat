@@ -13,17 +13,24 @@ import argparse
 import os
 import re
 import sys
-
+# prompt_toolkit is a Library for building powerful interactive
+# command lines in Python. It can be a replacement for GNU Readline, but it can be much more than that.
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+# rich: Rich text and beautiful formatting in the terminal.
+# Console: A high level console interface.
 from rich.console import Console
+#Live: Renders an auto-updating live display of any given renderable.
 from rich.live import Live
+# Markdown: A Markdown renderable.
 from rich.markdown import Markdown
 
+# add_model_args 增加命令行选项的函数
 from fastchat.model.model_adapter import add_model_args
+# gptq参数的dataclass
 from fastchat.modules.gptq import GptqConfig
 from fastchat.serve.inference import ChatIO, chat_loop
 
