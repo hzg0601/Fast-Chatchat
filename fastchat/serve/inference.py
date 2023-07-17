@@ -1,4 +1,27 @@
-"""Inference for FastChat models."""
+"""Inference for FastChat models.
+主要函数有三个：generate_stream，ChatIO, chat_loop
+generate_stream:
+# 完全用model的原始方法进行推理
+# 对于encode_decoder模型，调用decoder得到输出，然后用lm_head得到logits
+# 对于decoder模型，调用forward方法得到输出out,然后out.logits得到最终的logits
+# 然后用softmax,multinomial得到最终的token id
+# 然后用tokenizer.decode得到字符，并判断 partially_stopped 字段
+# 根据partially_stopped,yield最终的输出
+
+ChatIO：
+组织输入、输出、输出方式的抽象类
+包含三个抽象方法,prompt_for_input,prompt_for_output,stream_output
+
+chat_loop:
+# 1. 根据 fastchat.model.model_adapter加载模型
+# 2. 根据模型，fastchat.model.get_generate_stream_function加载stream function
+# 3. 如果给定了conv_template字段，则调用conversation.py的get_conv_template加载对话模板；
+#    否则调用model_adapter.py的get_conversation_template通过model_path加载对话模板；
+# 4. 调用chatio.prompt_for_input(conv.roles[0])和模板生成input prompt
+# 5. 调用stream function，基于input prompt和生成gen_params得到输出output_stream
+# 6. chatio.stream_output(output_stream)得到最终的输出
+# 7. 更新对话模板conv.
+"""
 import abc
 import gc
 import math

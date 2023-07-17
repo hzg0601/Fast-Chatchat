@@ -1,6 +1,6 @@
 """
 Chat with a model with command line interface.
-
+定义命令行输出的形式类：SimpleChatIO,RichChatIO,ProgrammaticChatIO
 Usage:
 python3 -m fastchat.serve.cli --model lmsys/vicuna-7b-v1.3
 python3 -m fastchat.serve.cli --model lmsys/fastchat-t5-3b-v1.0
@@ -15,6 +15,9 @@ import re
 import sys
 # prompt_toolkit is a Library for building powerful interactive
 # command lines in Python. It can be a replacement for GNU Readline, but it can be much more than that.
+
+# PromptSession 用于提示应用程序，可以用作 GNU Readline 的替代品。 这是许多prompt_toolkit功能的包装，可以替代raw_input。 
+# 所有需要“格式化文本”的参数都可以采用纯文本（unicode 对象）、(style_str, text) 元组列表或 HTML 对象。
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
@@ -30,11 +33,14 @@ from rich.markdown import Markdown
 
 # add_model_args 增加命令行选项的函数
 from fastchat.model.model_adapter import add_model_args
-# gptq参数的dataclass
+# GptqConfig: gptq参数的dataclass
 from fastchat.modules.gptq import GptqConfig
+# ChatIO：组织输入、输出和流式输出的抽象类
+# chat_loop:从加载模型、模板、stream_function到得到输出的全流程函数
+# 它的输出、输出、流式输出的组织是基于ChatIO
 from fastchat.serve.inference import ChatIO, chat_loop
 
-
+# 一个组织输入、输出、stream_output模板的基本类
 class SimpleChatIO(ChatIO):
     def __init__(self, multiline: bool = False):
         self._multiline = multiline
@@ -68,26 +74,35 @@ class SimpleChatIO(ChatIO):
         print(" ".join(output_text[pre:]), flush=True)
         return " ".join(output_text)
 
-
+# 在终端以rich支持的富格式输出
 class RichChatIO(ChatIO):
     bindings = KeyBindings()
-
+    # Decorator for adding a key bindings.add(keys,filter,eager,is_global,save_before,record_in_macro)
+    # 即在会话中，按下escape键，enter键相当于执行了该函数，在本例中就是event.app.current_buffer.newline()
     @bindings.add("escape", "enter")
     def _(event):
         event.app.current_buffer.newline()
 
     def __init__(self, multiline: bool = False, mouse: bool = False):
+        # 定义prompt_toolkit命令行prompt会话类实例
         self._prompt_session = PromptSession(history=InMemoryHistory())
+        # 定义prompt_toolkit自动补全的实例
         self._completer = WordCompleter(
             words=["!!exit", "!!reset"], pattern=re.compile("$")
         )
+        # 使用rich的Console作为输出的默认console
         self._console = Console()
         self._multiline = multiline
         self._mouse = mouse
 
     def prompt_for_input(self, role) -> str:
+        # 格式 print(f"[red][bold][itatic][underline][blink2]role:")
         self._console.print(f"[bold]{role}:")
         # TODO(suquark): multiline input has some issues. fix it later.
+        # The first set of arguments is a subset of the ~.PromptSession class itself. 
+        # For these, passing in None will keep the current values that are active in the session. 
+        # Passing in a value will set the attribute for the session,
+        #  which means that it applies to the current, but also to the next prompts.
         prompt_input = self._prompt_session.prompt(
             completer=self._completer,
             multiline=False,
@@ -95,7 +110,12 @@ class RichChatIO(ChatIO):
             auto_suggest=AutoSuggestFromHistory(),
             key_bindings=self.bindings if self._multiline else None,
         )
+        print("*"*80)
+        print("test _prompt_session.prompt")
+        print(prompt_input)
         self._console.print()
+        print("*"*80)
+        print("test _console.print()")
         return prompt_input
 
     def prompt_for_output(self, role: str):
@@ -104,7 +124,7 @@ class RichChatIO(ChatIO):
     def stream_output(self, output_stream):
         """Stream output from a role."""
         # TODO(suquark): the console flickers when there is a code block
-        #  above it. We need to cut off "live" when a code block is done.
+        # todo above it. We need to cut off "live" when a code block is done.
 
         # Create a Live context for updating the console output
         with Live(console=self._console, refresh_per_second=4) as live:
@@ -135,6 +155,7 @@ class RichChatIO(ChatIO):
                         lines.append("  \n")
                 markdown = Markdown("".join(lines))
                 # Update the Live console output
+                print("*"*80,"test markdown..")
                 live.update(markdown)
         self._console.print()
         return text
@@ -147,6 +168,8 @@ class ProgrammaticChatIO(ChatIO):
         #  message content.
         end_sequence = " __END_OF_A_MESSAGE_47582648__\n"
         len_end = len(end_sequence)
+        # 如果接收的数据不足end_sequence的长度，则持续接收数据，否则判断最后的字符是否是end_sequence
+        # 如果是就停止读取数据返回content,格式化打印[!OP:{role}: {content}]
         while True:
             if len(contents) >= len_end:
                 last_chars = contents[-len_end:]
@@ -165,9 +188,13 @@ class ProgrammaticChatIO(ChatIO):
         print(f"[!OP:{role}]: ", end="", flush=True)
 
     def stream_output(self, output_stream):
+        # 读取输出流generator的文本，根据空格划分，定义now为文本长度-1，
+        # 若now大于前序文本的长度，则打印[pre:now]间的文本
+        # 打印最后一次输出的pre后的所有文本，返回最后一次的全部文本
         pre = 0
         for outputs in output_stream:
             output_text = outputs["text"]
+            #* ---应只适用于英文，不适用于中文-----
             output_text = output_text.strip().split(" ")
             now = len(output_text) - 1
             if now > pre:
