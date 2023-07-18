@@ -1,5 +1,6 @@
 """
 A model worker that executes the model.
+本脚本中所有post接口的输入都是Request类，该类由具体的模型接口提供
 """
 import argparse
 import asyncio
@@ -15,7 +16,7 @@ import uuid
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 import requests
-
+from starlette.responses import RedirectResponse
 try:
     from transformers import (
         AutoTokenizer,
@@ -332,6 +333,7 @@ class ModelWorker(BaseModelWorker):
         return ret
 
 
+
 def release_worker_semaphore():
     worker.semaphore.release()
 
@@ -395,6 +397,9 @@ async def api_get_conv(request: Request):
 async def api_model_details(request: Request):
     return {"context_length": worker.context_len}
 
+@app.get("/",summary="swagger document")
+async def docs():
+    return RedirectResponse(url="/docs")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

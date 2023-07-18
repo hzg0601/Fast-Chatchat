@@ -7,11 +7,13 @@ It sends worker addresses to clients.
 2. get_worker_address:
     根据dispatch_method和model_name找到对应的worker_name
 3.  worker_api_get_status: 
-    针对api的get_worker_stutus函数
+    针对api的get_worker_status函数
 4. worker_api_generate_stream：
     首先调用get_worker_address获取worker_name,然拼接{worker_name}+/worker_generate_stream得到流式输出的接口地址,
     执行requests.post方法访问该接口地址，获取流式输出的生成器，执行流式输出。
     从此处可以看出，后续仍需针对每个worker定义{worker_name}+/worker_generate_stream接口的函数。
+
+本脚本的api接口接受的输入为Request类，该类由model_worker.py提供
 """
 import argparse
 import asyncio
@@ -28,6 +30,7 @@ from fastapi.responses import StreamingResponse
 import numpy as np
 import requests
 import uvicorn
+from starlette.responses import RedirectResponse
 
 from fastchat.constants import (
     CONTROLLER_HEART_BEAT_EXPIRATION,
@@ -291,6 +294,8 @@ class Controller:
         except requests.exceptions.RequestException as e:
             yield self.handle_worker_timeout(worker_addr)
 
+async def docs():
+    return RedirectResponse(url="/docs")
 
 app = FastAPI()
 
@@ -339,6 +344,7 @@ async def worker_api_generate_stream(request: Request):
 async def worker_api_get_status(request: Request):
     return controller.worker_api_get_status()
 
+app.get("/",summary="swagger document")(docs)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
