@@ -82,7 +82,8 @@ class BaseModelWorker:
         self.semaphore = None
 
         self.heart_beat_thread = None
-
+    # 先执行register_to_controller检查是否能访问{worker_name}+/worker_get_status
+    # 然后以多线程执行heart_beat_worker
     def init_heart_beat(self):
         self.register_to_controller()
         self.heart_beat_thread = threading.Thread(
@@ -90,6 +91,9 @@ class BaseModelWorker:
         )
         self.heart_beat_thread.start()
 
+    # 访问controller_addr +"/register_worker"接口，调用controller.register_worker方法
+    # worker_addr作为数据输出，其调用get_worker_status方法，执行requests.post方法访问{worker_name}+/worker_get_status
+    #? 还是没有定义worker各接口的方法啊
     def register_to_controller(self):
         logger.info("Register to controller")
 
@@ -101,7 +105,10 @@ class BaseModelWorker:
         }
         r = requests.post(url, json=data)
         assert r.status_code == 200
-
+    
+    # 访问controller_addr + "/receive_heart_beat"，将worker_addr作为参数输入，
+    # 接口会调用receive_heart_beat，更新queue_length,并以当前时间为last_heart_beat
+    # 若访问成功，则
     def send_heart_beat(self):
         logger.info(
             f"Send heart beat. Models: {self.model_names}. "

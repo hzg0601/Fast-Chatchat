@@ -11,7 +11,7 @@ from torch import Tensor
 from torch.nn import functional as F
 import torch.nn as nn
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer,AutoModel
 
 
 @dataclasses.dataclass
@@ -129,7 +129,7 @@ def apply_compressed_weight(module, compressed_state_dict, target_device, prefix
         )
 
 
-def load_compress_model(model_path, device, torch_dtype, use_fast, revision="main"):
+def load_compress_model(model_path, device, torch_dtype, use_fast=False, revision="main"):
     """先初始化一个无权重的模型，然后加载检查点文件，将其中的线性层权重转换为CLinear层，
         非线性层仍保持无权重，一起传输到指定设备上
 
@@ -145,8 +145,9 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
     """
     # partially load model
     # 1. 加载模型的tokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path, use_fast=use_fast, revision=revision
+        model_path, trust_remote_code=True,use_fast=use_fast, revision=revision
     )
     # 2. 初始化一个无权重的模型，找出其中所有的线性层
     with init_empty_weights():
@@ -155,16 +156,27 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
             low_cpu_mem_usage=True,
             torch_dtype=torch_dtype,
             revision=revision,
+            trust_remote_code=True
         )
-        model = AutoModelForCausalLM.from_config(config)
+
+        if "chatglm" in model_path.lower():
+            model = AutoModel.from_config(config,trust_remote_code=True)
+        else:
+            model = AutoModelForCausalLM.from_config(config,trust_remote_code=True)
         linear_weights = get_compressed_list(model)
     # 3. 找出模型的所有bin文件
+    
     if os.path.exists(model_path):
         # `model_path` is a local folder
         base_pattern = os.path.join(model_path, "pytorch_model*.bin")
     else:
         # `model_path` is a cached Hugging Face repo
-        model_path = snapshot_download(model_path, revision=revision)
+        model_path_temp = os.path.join(os.getenv("HOME"),".cache/huggingface/hub","models--"+model_path.replace("/","--"),"snapshots/")
+        if os.path.exists(model_path_temp):
+            temp_random = os.listdir(model_path_temp)[-1]
+            model_path = os.path.join(model_path_temp,temp_random)
+        else:
+            model_path = snapshot_download(model_path, revision=revision)
         base_pattern = os.path.join(model_path, "pytorch_model*.bin")
 
     files = glob.glob(base_pattern)
@@ -186,7 +198,9 @@ def load_compress_model(model_path, device, torch_dtype, use_fast, revision="mai
             tensor = None
             gc.collect()
             torch.cuda.empty_cache()
+
     # 5. 将模型的非线性层传输至device上
+
     for name in model.state_dict():
         if name not in linear_weights:
             set_module_tensor_to_device(

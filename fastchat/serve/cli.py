@@ -1,6 +1,7 @@
 """
 Chat with a model with command line interface.
-定义命令行输出的形式类：SimpleChatIO,RichChatIO,ProgrammaticChatIO
+定义命令行输出的形式类：SimpleChatIO,RichChatIO,ProgrammaticChatIO,
+基于chat_loop提供命令行客户端的命令行对话
 Usage:
 python3 -m fastchat.serve.cli --model lmsys/vicuna-7b-v1.3
 python3 -m fastchat.serve.cli --model lmsys/fastchat-t5-3b-v1.0

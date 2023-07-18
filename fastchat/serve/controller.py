@@ -1,6 +1,17 @@
 """
 A controller manages distributed workers.
 It sends worker addresses to clients.
+定义Controller类，该类包含如下主要方法：
+1. register_worker: 
+    调用get_worker_status执行worker的访问，如果调用失败返回False,否则返回True;get_worker_status执行requests.post方法访问"worker_get_status"方法;
+2. get_worker_address:
+    根据dispatch_method和model_name找到对应的worker_name
+3.  worker_api_get_status: 
+    针对api的get_worker_stutus函数
+4. worker_api_generate_stream：
+    首先调用get_worker_address获取worker_name,然拼接{worker_name}+/worker_generate_stream得到流式输出的接口地址,
+    执行requests.post方法访问该接口地址，获取流式输出的生成器，执行流式输出。
+    从此处可以看出，后续仍需针对每个worker定义{worker_name}+/worker_generate_stream接口的函数。
 """
 import argparse
 import asyncio
@@ -29,8 +40,9 @@ from fastchat.utils import build_logger
 
 logger = build_logger("controller", "controller.log")
 
-
+#? auto实例就是一个object实例，怎么实现分派的？ 
 class DispatchMethod(Enum):
+    # 在Enum中auto()会自动将实例转换为对应的值
     LOTTERY = auto()
     SHORTEST_QUEUE = auto()
 
@@ -43,7 +55,7 @@ class DispatchMethod(Enum):
         else:
             raise ValueError(f"Invalid dispatch method")
 
-
+#? 这些数据是如何给定的？
 @dataclasses.dataclass
 class WorkerInfo:
     model_names: List[str]
@@ -52,7 +64,9 @@ class WorkerInfo:
     check_heart_beat: bool
     last_heart_beat: str
 
-
+# 先等待CONTROLLER_HEART_BEAT_EXPIRATION秒
+# 然后执行controller的remove_stable_workers_by_expiration方法
+# 删除worker_info里对应worker_name的信息
 def heart_beat_controller(controller):
     while True:
         time.sleep(CONTROLLER_HEART_BEAT_EXPIRATION)
@@ -63,13 +77,18 @@ class Controller:
     def __init__(self, dispatch_method: str):
         # Dict[str -> WorkerInfo]
         self.worker_info = {}
+        # 返回DispatchMethod.LOTTERY或DispatchMethod.SHORTEST_QUEUE
         self.dispatch_method = DispatchMethod.from_str(dispatch_method)
-
+        # 构造一个Thread类，在执行时调用heart_beat_controller,
+        # 即先等待一段时间，然后执行remove_stable_workers_by_expiration
         self.heart_beat_thread = threading.Thread(
             target=heart_beat_controller, args=(self,)
         )
+        # Start the thread's activity.
         self.heart_beat_thread.start()
-
+    # 调用get_worker_status执行worker的访问，如果调用失败返回False,否则返回True
+    # get_worker_status执行requests.post方法访问"worker_get_status"方法，
+    # 访问成功则得到状态信息，否则返回None.
     def register_worker(
         self, worker_name: str, check_heart_beat: bool, worker_status: dict
     ):
@@ -93,7 +112,8 @@ class Controller:
 
         logger.info(f"Register done: {worker_name}, {worker_status}")
         return True
-
+    # get_worker_status执行requests.post方法访问{worker_name}+/worker_get_status
+    # 访问成功则得到状态信息，否则返回None.
     def get_worker_status(self, worker_name: str):
         try:
             r = requests.post(worker_name + "/worker_get_status", timeout=5)
@@ -106,10 +126,12 @@ class Controller:
             return None
 
         return r.json()
-
+    #? remove_worker仅仅是删除了worker_info里对应worker_name的信息
     def remove_worker(self, worker_name: str):
         del self.worker_info[worker_name]
-
+    # 如果调用register_worker即访问worker_name/worker_get_status失败，则
+    # 认为该worker已失效，日志记录该信息
+    #? refresh_all_workers也仅仅是测试对应worker的worker_get_status是否能访问成功，并没有更新信息？
     def refresh_all_workers(self):
         old_info = dict(self.worker_info)
         self.worker_info = {}
@@ -125,8 +147,13 @@ class Controller:
             model_names.update(w_info.model_names)
 
         return list(model_names)
+    
+    # 根据dispatch_method和model_name找到对应的worker_name
 
     def get_worker_address(self, model_name: str):
+        # 如果dispatch_method的模式为LOTTERY
+        # 则记录所有worker的speed字段的值，组装为一个np.array并求和
+        # 如果速度和<1e-4,则返回"";否则根据速度和对速度进行标准化，按速度随机采样一个worker_name并返回
         if self.dispatch_method == DispatchMethod.LOTTERY:
             worker_names = []
             worker_speeds = []
@@ -139,6 +166,7 @@ class Controller:
             if norm < 1e-4:
                 return ""
             worker_speeds = worker_speeds / norm
+            #? 这种写法意义在哪里？
             if True:  # Directly return address
                 pt = np.random.choice(np.arange(len(worker_names)), p=worker_speeds)
                 worker_name = worker_names[pt]
@@ -160,6 +188,10 @@ class Controller:
                     worker_speeds = worker_speeds / norm
                     continue
             return worker_name
+        # 如果dispatch_method的模式为SHORTEST_QUEUE，
+        # 则记录所有worker的worker_name,以及用speed标准化的queue_length
+        # 如果worker_names的数量不为0，则找到最小的的标准化queue_length的index
+        # 找到对应的worker_name,将它的queue_length+1,然后返回worker_name.
         elif self.dispatch_method == DispatchMethod.SHORTEST_QUEUE:
             worker_names = []
             worker_qlen = []
@@ -171,6 +203,7 @@ class Controller:
                 return ""
             min_index = np.argmin(worker_qlen)
             w_name = worker_names[min_index]
+            #? 为什么将queue_length+1
             self.worker_info[w_name].queue_length += 1
             logger.info(
                 f"names: {worker_names}, queue_lens: {worker_qlen}, ret: {w_name}"
@@ -178,7 +211,7 @@ class Controller:
             return w_name
         else:
             raise ValueError(f"Invalid dispatch method: {self.dispatch_method}")
-
+    # 将给定worker_name的last_heart_beat设定为当前时间，queue_length设定为给定的queue_length
     def receive_heart_beat(self, worker_name: str, queue_length: int):
         if worker_name not in self.worker_info:
             logger.info(f"Receive unknown heart beat. {worker_name}")
@@ -188,7 +221,9 @@ class Controller:
         self.worker_info[worker_name].last_heart_beat = time.time()
         logger.info(f"Receive heart beat. {worker_name}")
         return True
-
+    #? 笔误吧，应为remove_stale_workers_by_expiration
+    # 如果某个worker的last_heart_beat时间超出了CONTROLLER_HEART_BEAT_EXPIRATION，且check_heart_beat字段的值为True
+    # 则执行remove_worker，删除worker_info里对应worker_name的信息
     def remove_stable_workers_by_expiration(self):
         expire = time.time() - CONTROLLER_HEART_BEAT_EXPIRATION
         to_delete = []
@@ -198,7 +233,7 @@ class Controller:
 
         for worker_name in to_delete:
             self.remove_worker(worker_name)
-
+    # 没有指定worker的处理逻辑，针对api
     def handle_no_worker(params):
         logger.info(f"no worker: {params['model']}")
         ret = {
@@ -206,7 +241,7 @@ class Controller:
             "error_code": ErrorCode.CONTROLLER_NO_WORKER,
         }
         return json.dumps(ret).encode() + b"\0"
-
+    # 访问worker_address失败的处理逻辑,针对api
     def handle_worker_timeout(worker_address):
         logger.info(f"worker timeout: {worker_address}")
         ret = {
@@ -217,6 +252,7 @@ class Controller:
 
     # Let the controller act as a worker to achieve hierarchical
     # management. This can be used to connect isolated sub networks.
+    # 针对api的get_worker_status处理
     def worker_api_get_status(self):
         model_names = set()
         speed = 0
@@ -234,8 +270,10 @@ class Controller:
             "speed": speed,
             "queue_length": queue_length,
         }
-
+    # 首先根据model_name获取model_name，然拼接{worker_name}+/worker_generate_stream得到流式输出的接口地址
+    # 
     def worker_api_generate_stream(self, params):
+        # get_worker_addgress根据model_name获取worker_name
         worker_addr = self.get_worker_address(params["model"])
         if not worker_addr:
             yield self.handle_no_worker(params)
