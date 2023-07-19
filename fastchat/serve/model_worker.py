@@ -1,6 +1,59 @@
 """
 A model worker that executes the model.
-本脚本中所有post接口的输入都是Request类，该类由具体的模型接口提供
+# worker的基类
+# 1. 定义init_heart_beat：先执行register_to_controller检查是否能访问{worker_name}+/worker_get_status
+#    然后以多线程执行heart_beat_worker,heart_beat_worker访问controller_addr + "/receive_heart_beat"，将worker_addr作为参数输入，
+#   调用controller.receive_heart_beat，receive_heart_beat更新queue_length,并以当前时间为last_heart_beat
+
+# 2. 定义register_to_controller：访问controller_addr +"/register_worker"接口，调用controller.register_worker方法，
+#    register_worker方法调用controller.get_worker_status访问worker_name + "/worker_get_status"，
+
+# 3. 定义send_heart_beat: 访问controller_addr + "/receive_heart_beat"，将worker_addr作为参数输入，
+#    调用controller.receive_heart_beat，receive_heart_beat更新queue_length,并以当前时间为last_heart_beat
+#    若访问成功，则结束循环，否则抛出异常；
+# 4. get_queue_length,get_conv_template,get_status,count_token等更新模型执行相关信息。
+
+
+# worker的类
+# 1. __init__: 初始化基类,调用model_adapter.py load_model加载模型和tokenizer;
+#               获取输入文本长度限制，即max_sequence_length或类似参数;
+#               调用model_adapter.py的get_generate_stream_function方法获取generate_stream_func方法
+# 2. generate_stream_gate: 调用generate_stream_func方法，执行流式输出，并执行各种错误处理。
+#                           prompt需要包含在输入的param。
+# 3. generate_gate: 调用generate_stream_gate，但不返回最后一次的输出；
+# 4. get_embeddings:调用tokenizer.batch_encode_plus方法得到输入的encoding, 取出input_ids, attention_mask
+#                   调用model的forward方法得到输出，以输出.hidden_states的最后一层为初始embedding记为data,
+#                   以data * mask 然后执行求和、按seq_len标准化、L2标准化得到最终的embedding.
+
+定义了如下worker的接口
+
+worker_generate_stream：
+# 用limit_worker_concurrency实例化asyncio.Semaphore，然后调用其acquire方法，使内部计数器-1
+# 调用worker的geenerate_strem_gate,
+# 创建一个背景任务容器，在容器中增加一个release_worker_semaphore任务
+# 调用starlette.response.StreamingResponse,StreamingResponse会
+# 先执行流式输出，进行错误处理，然后执行背景任务,即调用semaphore.release方法。
+
+worker_generate:
+# semaphore行为与api_generate_stream类似，只是输出的时候不输出最后一条，调用JSONResponse类进行格式化输出
+
+worker_get_embeddings：
+# semaphore行为与api_generate_stream类似，只是用于输出embedding，调用JSONResponse类进行格式化输出
+
+worker_get_status:
+# 调用WorkerModel实例的get_status方法，返回model_name,speed,queue_length等属性
+
+count_token:
+# 调用WorkerModel实例的count_token方法，统计输入的token
+
+
+worker_get_conv_template:
+# 调用WorkerModel实例的get_conv_template方法，返回conv的字典
+
+model_details:
+# 获取输入文本长度限制，即max_sequence_length或类似参数;
+
+worker并发的调度是基于asynio.Semaphore。
 """
 import argparse
 import asyncio
@@ -11,6 +64,12 @@ import os
 import time
 from typing import List
 import threading
+# This module provides immutable UUID objects (class UUID) and the functions 
+# uuid1(), uuid3(), uuid4(), uuid5() for generating version 1, 3, 4, and 5 UUIDs as specified in RFC 4122.
+
+# If all you want is a unique ID, you should probably call uuid1() or uuid4(). 
+# Note that uuid1() may compromise privacy since it creates a UUID containing the computer's network address.
+#  uuid4() creates a random UUID.
 import uuid
 
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -45,7 +104,7 @@ from fastchat.model.model_adapter import (
 from fastchat.modules.gptq import GptqConfig
 from fastchat.utils import build_logger, pretty_print_semaphore, get_context_length
 
-
+# 调用脚本时用uuid4随机指定一个worker_id
 worker_id = str(uuid.uuid4())[:8]
 logger = build_logger("model_worker", f"model_worker_{worker_id}.log")
 
@@ -91,7 +150,7 @@ class BaseModelWorker:
         self.conv = get_conversation_template(model_path)
         self.tokenizer = None
         self.context_len = None
-        self.call_ct = 0
+        self.call_ct = 0 # 调用次数计数
         self.semaphore = None
 
         self.heart_beat_thread = None
@@ -105,8 +164,8 @@ class BaseModelWorker:
         self.heart_beat_thread.start()
 
     # 访问controller_addr +"/register_worker"接口，调用controller.register_worker方法，而controller.register_worker
-    # 以worker_addr作为数据输出，其调用controller.get_worker_status方法，执行requests.post方法访问{worker_name}+/worker_get_status
-    #? 还是没有定义worker各接口的方法啊
+    # 以worker_addr作为数据输出，其调用controller.get_worker_status方法，执行requests.post方法访问{worker_name}+/worker_get_status -->
+    #? 还是没有定义worker各接口的方法啊 --> 在下文的接口函数中定义
     def register_to_controller(self):
         logger.info("Register to controller")
 
@@ -197,7 +256,7 @@ class BaseModelWorker:
 # 4. get_embeddings:调用tokenizer.batch_encode_plus方法得到输入的encoding, 取出input_ids, attention_mask
 #                   调用model的forward方法得到输出，以输出.hidden_states的最后一层为初始embedding记为data,
 #                   以data * mask 然后执行求和、按seq_len标准化、L2标准化得到最终的embedding.
-# 5. 
+
 class ModelWorker(BaseModelWorker):
     def __init__(
         self,
@@ -206,7 +265,7 @@ class ModelWorker(BaseModelWorker):
         worker_id: str,
         model_path: str,
         model_names: List[str],
-        limit_worker_concurrency: int,
+        limit_worker_concurrency: int, # 并发的worker的数量，防止OOM
         no_register: bool,
         device: str,
         num_gpus: int,
@@ -358,7 +417,11 @@ class ModelWorker(BaseModelWorker):
         return ret
 
 
-
+# semaphore.release,协程释放，semaphore.acquire协程进入，
+# 即每acquire一次，允许的最大并发数-1，每release一次，允许的最大并发数+1
+# queue_length中，semaphore._value是worker的容量，semaphore._awaiter是等待执行的worker列表，
+# limit_worker_concurrent - semaphore._value为正在执行的worker的数量
+# queue_length = 正在执行的woker的数量+等待执行的worker的数量
 def release_worker_semaphore():
     worker.semaphore.release()
 
@@ -380,7 +443,7 @@ def create_background_tasks():
     background_tasks.add_task(release_worker_semaphore)
     return background_tasks
 
-# asyncio.Semaphore,
+# 用limit_worker_concurrency实例化asyncio.Semaphore，然后调用其acquire方法，使内部计数器-1
 # 调用worker的geenerate_strem_gate,
 # 创建一个背景任务容器，在容器中增加一个release_worker_semaphore任务
 # 调用starlette.response.StreamingResponse,StreamingResponse会
@@ -393,7 +456,7 @@ async def api_generate_stream(request: Request):
     background_tasks = create_background_tasks()
     return StreamingResponse(generator, background=background_tasks)
 
-# 与api_generate_stream类似，只是输出的时候不输出最后一条
+# 与api_generate_stream类似，只是输出的时候不输出最后一条，调用JSONResponse类进行格式化输出
 @app.post("/worker_generate")
 async def api_generate(request: Request):
     params = await request.json()
@@ -402,7 +465,7 @@ async def api_generate(request: Request):
     release_worker_semaphore()
     return JSONResponse(output)
 
-
+# 与api_generate_stream类似，只是用于输出embedding，调用JSONResponse类进行格式化输出
 @app.post("/worker_get_embeddings")
 async def api_get_embeddings(request: Request):
     params = await request.json()
@@ -411,30 +474,30 @@ async def api_get_embeddings(request: Request):
     release_worker_semaphore()
     return JSONResponse(content=embedding)
 
-
+# 调用WorkerModel实例的get_status方法，返回model_name,speed,queue_length等属性
 @app.post("/worker_get_status")
 async def api_get_status(request: Request):
     return worker.get_status()
 
-
+# 调用WorkerModel实例的count_token方法，统计输入的token
 @app.post("/count_token")
 async def api_count_token(request: Request):
     params = await request.json()
     return worker.count_token(params)
 
-
+# 调用WorkerModel实例的get_conv_template方法，返回conv的字典
 @app.post("/worker_get_conv_template")
 async def api_get_conv(request: Request):
     return worker.get_conv_template()
 
-
+# 获取输入文本长度限制，即max_sequence_length或类似参数;
 @app.post("/model_details")
 async def api_model_details(request: Request):
     return {"context_length": worker.context_len}
 
-@app.get("/",summary="swagger document")
-async def docs():
-    return RedirectResponse(url="/docs")
+# @app.get("/",summary="swagger document")
+# async def docs():
+#     return RedirectResponse(url="/docs")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
