@@ -119,7 +119,7 @@ class Controller:
     # 访问成功则得到状态信息，否则返回None.
     def get_worker_status(self, worker_name: str):
         try:
-            r = requests.post(worker_name + "/worker_get_status", timeout=5)
+            r = requests.post(worker_name + "/worker_get_status", timeout=50)
         except requests.exceptions.RequestException as e:
             logger.error(f"Get status fails: {worker_name}, {e}")
             return None
