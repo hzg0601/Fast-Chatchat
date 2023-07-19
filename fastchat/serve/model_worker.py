@@ -57,7 +57,18 @@ def heart_beat_worker(obj):
         time.sleep(WORKER_HEART_BEAT_INTERVAL)
         obj.send_heart_beat()
 
+# worker的基类
+# 1. 定义init_heart_beat：先执行register_to_controller检查是否能访问{worker_name}+/worker_get_status
+#    然后以多线程执行heart_beat_worker,heart_beat_worker访问controller_addr + "/receive_heart_beat"，将worker_addr作为参数输入，
+#   调用controller.receive_heart_beat，receive_heart_beat更新queue_length,并以当前时间为last_heart_beat
 
+# 2. 定义register_to_controller：访问controller_addr +"/register_worker"接口，调用controller.register_worker方法，
+#    register_worker方法调用controller.get_worker_status访问worker_name + "/worker_get_status"，
+
+# 3. 定义send_heart_beat: 访问controller_addr + "/receive_heart_beat"，将worker_addr作为参数输入，
+#    调用controller.receive_heart_beat，receive_heart_beat更新queue_length,并以当前时间为last_heart_beat
+#    若访问成功，则结束循环，否则抛出异常；
+# 4. get_queue_length,get_conv_template,get_status,count_token等更新模型执行相关信息。
 class BaseModelWorker:
     def __init__(
         self,
@@ -71,6 +82,7 @@ class BaseModelWorker:
         self.controller_addr = controller_addr
         self.worker_addr = worker_addr
         self.worker_id = worker_id
+        # model_path若为本地路径需要以"/"为结尾
         if model_path.endswith("/"):
             model_path = model_path[:-1]
         self.model_names = model_names or [model_path.split("/")[-1]]
@@ -92,8 +104,8 @@ class BaseModelWorker:
         )
         self.heart_beat_thread.start()
 
-    # 访问controller_addr +"/register_worker"接口，调用controller.register_worker方法
-    # worker_addr作为数据输出，其调用get_worker_status方法，执行requests.post方法访问{worker_name}+/worker_get_status
+    # 访问controller_addr +"/register_worker"接口，调用controller.register_worker方法，而controller.register_worker
+    # 以worker_addr作为数据输出，其调用controller.get_worker_status方法，执行requests.post方法访问{worker_name}+/worker_get_status
     #? 还是没有定义worker各接口的方法啊
     def register_to_controller(self):
         logger.info("Register to controller")
@@ -108,8 +120,8 @@ class BaseModelWorker:
         assert r.status_code == 200
     
     # 访问controller_addr + "/receive_heart_beat"，将worker_addr作为参数输入，
-    # 接口会调用receive_heart_beat，更新queue_length,并以当前时间为last_heart_beat
-    # 若访问成功，则
+    # 接口会调用controller.receive_heart_beat，更新queue_length,并以当前时间为last_heart_beat
+    # 若访问成功，则结束循环，否则抛出异常
     def send_heart_beat(self):
         logger.info(
             f"Send heart beat. Models: {self.model_names}. "
@@ -138,7 +150,8 @@ class BaseModelWorker:
 
         if not exist:
             self.register_to_controller()
-
+    # queue_length = limit_worker_concurrency - semaphore._value + semaphore._waiters
+    #? queue_length 是并发时等待队列的长度
     def get_queue_length(self):
         if (
             self.semaphore is None
@@ -152,7 +165,7 @@ class BaseModelWorker:
                 - self.semaphore._value
                 + len(self.semaphore._waiters)
             )
-
+    #? speed是什么？
     def get_status(self):
         return {
             "model_names": self.model_names,
@@ -174,7 +187,17 @@ class BaseModelWorker:
     def get_conv_template(self):
         return {"conv": self.conv}
 
-
+# worker的类
+# 1. __init__: 初始化基类,调用model_adapter.py load_model加载模型和tokenizer;
+#               获取输入文本长度限制，即max_sequence_length或类似参数;
+#               调用model_adapter.py的get_generate_stream_function方法获取generate_stream_func方法
+# 2. generate_stream_gate: 调用generate_stream_func方法，执行流式输出，并执行各种错误处理。
+#                           prompt需要包含在输入的param。
+# 3. generate_gate: 调用generate_stream_gate，但不返回最后一次的输出；
+# 4. get_embeddings:调用tokenizer.batch_encode_plus方法得到输入的encoding, 取出input_ids, attention_mask
+#                   调用model的forward方法得到输出，以输出.hidden_states的最后一层为初始embedding记为data,
+#                   以data * mask 然后执行求和、按seq_len标准化、L2标准化得到最终的embedding.
+# 5. 
 class ModelWorker(BaseModelWorker):
     def __init__(
         self,
@@ -262,7 +285,9 @@ class ModelWorker(BaseModelWorker):
         for x in self.generate_stream_gate(params):
             pass
         return json.loads(x[:-1].decode())
-
+    #   调用tokenizer.batch_encode_plus方法得到输入的encoding, 取出input_ids, attention_mask
+    #   调用model的forward方法得到输出，以输出.hidden_states的最后一层为初始embedding记为data,
+    #   以data * mask 然后执行求和、按seq_len标准化、L2标准化得到最终的embedding.
     @torch.inference_mode()
     def get_embeddings(self, params):
         self.call_ct += 1
@@ -337,19 +362,29 @@ class ModelWorker(BaseModelWorker):
 def release_worker_semaphore():
     worker.semaphore.release()
 
+# 用limit_worker_concurrency实例化asyncio.Semaphore，然后调用其acquire方法
 
+# semaphore管理一个内部计数器，该计数器在每次 acquire() 调用时递减，并在每次 release() 调用时递增。 
+# 计数器永远不会低于零； 当 acquire() 发现它为零时，它会阻塞，等待其他线程调用release()。
+
+# semaphore还支持上下文管理协议。可选参数给出内部计数器的初始值； 默认为 1。如果给定的值小于 0，则会引发 ValueError。
 def acquire_worker_semaphore():
     if worker.semaphore is None:
         worker.semaphore = asyncio.Semaphore(worker.limit_worker_concurrency)
     return worker.semaphore.acquire()
 
-
+# BackgroundTasks为BackgroundTask的容器，通过add_task增加新的任务
+# 该函数的意义是增加一个release_worker_semaphore任务
 def create_background_tasks():
     background_tasks = BackgroundTasks()
     background_tasks.add_task(release_worker_semaphore)
     return background_tasks
 
-
+# asyncio.Semaphore,
+# 调用worker的geenerate_strem_gate,
+# 创建一个背景任务容器，在容器中增加一个release_worker_semaphore任务
+# 调用starlette.response.StreamingResponse,StreamingResponse会
+# 先执行流式输出，进行错误处理，然后执行背景任务,即调用semaphore.release方法。
 @app.post("/worker_generate_stream")
 async def api_generate_stream(request: Request):
     params = await request.json()
@@ -358,7 +393,7 @@ async def api_generate_stream(request: Request):
     background_tasks = create_background_tasks()
     return StreamingResponse(generator, background=background_tasks)
 
-
+# 与api_generate_stream类似，只是输出的时候不输出最后一条
 @app.post("/worker_generate")
 async def api_generate(request: Request):
     params = await request.json()
