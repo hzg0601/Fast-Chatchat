@@ -6,21 +6,25 @@
 set -eo pipefail
 
 # this stops git rev-parse from failing if we run this from the .git directory
+# builtin命令 用于执行指定的shell内部命令，并返回内部命令的返回值
 builtin cd "$(dirname "${BASH_SOURCE:-$0}")"
+# 利用git rev-parse --show-toplevel查找当前工作路径
 ROOT="$(git rev-parse --show-toplevel)"
 builtin cd "$ROOT" || exit 1
-
+# head 类似于pandas的head，返回指定的前n行
+# python_library --version可以直接返回版本相关信息
 BLACK_VERSION=$(black --version | head -n 1 | awk '{print $2}')
 PYLINT_VERSION=$(pylint --version | head -n 1 | awk '{print $2}')
 
 # # params: tool name, tool version, required version
+# 定义函数,$1 name, $2 current version, $3 required version
 tool_version_check() {
     if [[ $2 != $3 ]]; then
         echo "Wrong $1 version installed: $3 is required, not $2."
         exit 1
     fi
 }
-
+# 调用函数进行检查
 tool_version_check "black" $BLACK_VERSION "23.3.0"
 tool_version_check "pylint" $PYLINT_VERSION "2.8.2"
 
