@@ -10,6 +10,12 @@ thus reports the combined queue lengths for health checks.
 
 We recommend using this with multiple Peft models (with `peft` in the name)
 where all Peft models are trained on the exact same base model.
+
+接口与model_worker.py完全一致，只是本脚本定义了一个全局的workers = []
+worker_map = {}以存储多个worker, 并在workers[0]上执行semaphore的acquire和release操作
+在具体接口调用时，规定params中须有worker_name,根据worker_name在worker_map中取出worker
+#? 是否意味着着semaphore是全局计数的，只要一个worker存在semaphore实例，就将其计到全局计数器中
+
 """
 import argparse
 import asyncio
@@ -70,7 +76,9 @@ app = FastAPI()
 def release_worker_semaphore():
     workers[0].semaphore.release()
 
-
+# 每个worker都赋予一个semaphore实例
+# semaphore实例的acquire和release操作都在第一个worker上执行
+#? 是否意味着着semaphore是全局计数的，只要一个worker存在semaphore实例，就将其计到全局计数器中
 def acquire_worker_semaphore():
     if workers[0].semaphore is None:
         # Share the same semaphore for all workers because

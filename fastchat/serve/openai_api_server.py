@@ -34,6 +34,7 @@ from fastchat.constants import (
 from fastchat.conversation import Conversation, SeparatorStyle
 from fastchat.model.model_adapter import get_conversation_template
 from fastapi.exceptions import RequestValidationError
+# openai_api返回类的格式
 from fastchat.protocol.openai_api_protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -55,6 +56,7 @@ from fastchat.protocol.openai_api_protocol import (
     ModelPermission,
     UsageInfo,
 )
+# 基本api的返回格式
 from fastchat.protocol.api_protocol import (
     APIChatCompletionRequest,
     APITokenCheckRequest,
@@ -66,7 +68,11 @@ logger = logging.getLogger(__name__)
 
 conv_template_map = {}
 
-
+# Base class for settings, allowing values to be overridden by environment variables.
+# This is useful in production for secrets you do not wish to save in code, 
+# it plays nicely with docker(-compose), Heroku and any 12 factor app design.
+# 允许值被环境变量覆盖的settings
+# pydantic的基本类
 class AppSettings(BaseSettings):
     # The address of the model controller.
     controller_address: str = "http://localhost:21001"
@@ -76,13 +82,24 @@ class AppSettings(BaseSettings):
 app_settings = AppSettings()
 app = fastapi.FastAPI()
 headers = {"User-Agent": "FastChat API Server"}
+# http的认证方式之一Bearer,在Bearer认证中的凭证称为Bearer_token 或者Access_token。
+# 该种方式的优点就是灵活方便，因为凭证的生成和验证完全由开发人员设计和实现。
+# 目前最流行的token编码协议就是JWT(JSON WEB TOKEN)
+# http认证根据凭证协议的不同，划分为不同的方式。常用的方式有：HTTP基本认证,HTTP摘要认证,HTTP Bearer认证
 get_bearer_token = HTTPBearer(auto_error=False)
 
+# Depends() is what FastAPI will actually use to know what is the dependency.
+# From it is that FastAPI will extract the declared parameters and that is what FastAPI will actually call.
+# 即前一个类型注释只起提示作用，Depends执行类型检查。
 
+# 检查AppSettings().api_keys列表中是否不为空，参数auth是否不为空，auth.credentials是否在全局的AppSettings().api_keys列表中，
+# 若AppSettings().api_keys列表中不为空，且检查通过，返回token,若不通过抛出错误，若列表为空，则返回None
+#? AppSettings内定义的属性是类的属性不是实例的属性啊？
 async def check_api_key(
     auth: Optional[HTTPAuthorizationCredentials] = Depends(get_bearer_token),
 ) -> str:
     if app_settings.api_keys:
+        # 海象运算符：将表达式的值赋值给变量，然后返回表达式的值
         if auth is None or (token := auth.credentials) not in app_settings.api_keys:
             raise HTTPException(
                 status_code=401,
@@ -100,18 +117,19 @@ async def check_api_key(
         # api_keys not set; allow all
         return None
 
-
+# 这种函数的意义在哪里？
 def create_error_response(code: int, message: str) -> JSONResponse:
     return JSONResponse(
         ErrorResponse(message=message, code=code).dict(), status_code=400
     )
 
-
+# 校验错误的handler
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
     return create_error_response(ErrorCode.VALIDATION_TYPE_ERROR, str(exc))
 
-
+# 调用get_worker_address测试model对应的worker是否能访问，
+# 如能访问返回None, 否则返回错误信息
 async def check_model(request) -> Optional[JSONResponse]:
     controller_address = app_settings.controller_address
     ret = None
@@ -127,7 +145,9 @@ async def check_model(request) -> Optional[JSONResponse]:
             )
     return ret
 
-
+# 检查输入的prompt的token数+max_tokens是否超出context_length
+# context_length为输入文本长度限制，即max_sequence_length或类似参数;
+#? 为什么额外加一个max_tokens参数？如何确定
 async def check_length(request, prompt, max_tokens):
     async with httpx.AsyncClient() as client:
         worker_addr = await get_worker_address(request.model, client)
@@ -160,7 +180,7 @@ async def check_length(request, prompt, max_tokens):
     else:
         return None
 
-
+# 检查request的各参数是否满足要求
 def check_requests(request) -> Optional[JSONResponse]:
     # Check all params
     if request.max_tokens is not None and request.max_tokens <= 0:
@@ -203,8 +223,15 @@ def check_requests(request) -> Optional[JSONResponse]:
 
     return None
 
+# tiktoken是OpenAI开源的一个快速分词工具。它将一个文本字符串（例如“tiktoken很棒！”）和一个编码（例如“cl100k_base”）作为输入，
+# 然后将字符串拆分为标记列表（例如["t"，"ik"，"token"，" is"，" great"，"!"]）。
 
-def process_input(model_name, inp):
+# input的处理函数
+# 1. 如果是str,作为列表直接返回
+# 2. 如果是List[int],调用tiktoken.encoding_for_model(model_name)检索模型的编码模式，得到一个编码模型
+#    编码模型对数字仅解码，作为一个str的列表返回
+# 3. 如果是List[List[int]],对每个子list进行解码得到一个str的列表返回
+def process_input(model_name:str, inp:Union[str,List[str],List[List[str]]])-> List[str]:
     if isinstance(inp, str):
         inp = [inp]
     elif isinstance(inp, list):
@@ -217,7 +244,7 @@ def process_input(model_name, inp):
 
     return inp
 
-
+# 1. 调用
 async def get_gen_params(
     model_name: str,
     messages: Union[str, List[Dict[str, str]]],
@@ -306,7 +333,8 @@ async def get_worker_address(model_name: str, client: httpx.AsyncClient) -> str:
     logger.debug(f"model_name: {model_name}, worker_addr: {worker_addr}")
     return worker_addr
 
-
+# 调用get_worker_address函数获取模型对应的worker_addr,
+# 
 async def get_conv(model_name: str):
     controller_address = app_settings.controller_address
     async with httpx.AsyncClient() as client:

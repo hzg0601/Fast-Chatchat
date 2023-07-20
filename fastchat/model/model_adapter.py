@@ -1,15 +1,64 @@
 """Model adapter registration.
-本项目的adapter是一个控制模型加载和获取默认prompt模板的类，
-包括match,load_model,load_compress_model,get_default_conv_template等方法
-match: 判断给定的model_path中是否包含给定的模型的名字，用于配合get_model_adapter函数
-load_model: 加载model和tokenizer，model和tokenizer的model_path一致
-load_compress_model: 加载时量化model,返回量化后的模型和tokenizer
-get_default_conv_template: 返回默认的对话模板
+本项目的adapter是一个控制模型加载和获取默认prompt模板的类。
+
+BaseModelAdapter:
+    包括match,load_model,load_compress_model,get_default_conv_template等方法
+    match: 判断给定的model_path中是否包含给定的模型的名字，用于配合get_model_adapter函数
+    load_model: 加载model和tokenizer，model和tokenizer的model_path一致
+    load_compress_model: 加载时量化model,返回量化后的模型和tokenizer
+    get_default_conv_template: 通过conversation.get_conv_template函数加载默认模板，需要确定模板的样式
+
+    # 定义新的Adapter一般需要自定义load_model，match, get_default_conv_template
+load_model:
+    # 1. 根据model_path调用get_model_adapter加载BaseModelAdapter
+    # 2. 检查device,确定cpu_offload关键字的值
+    # 3. 根据cpu_offload,load_8bit,gptq_config等关键字
+    #    确定加载方法BaseModelAdapter.load_compress_model,BaseModelAdapter.load_model,
+    #    load_gptq_quantized
+    # 4. 将模型上传到对应的device上
+
+register_model:
+    # 将类实例化并加入到全局的model_adapter列表中
+get_model_adapter:
+    基于model_path匹配对应的BaseModelAdapter类
+get_conversation_template:
+    # 根据模型路径获取BaseModelAdapter,调用BaseModelAdapter.get_default_conv_template 
+get_generate_stream_function:
+    # 1. 根据model的类型，从fastchat.model模块中加载chatglm,rwforcausallm,codet5p的generate_stream_*方法
+    # 2. 如果规定了peft_share_base_weights的值为True,且参数中model_path是peft的路径，
+    #?    则定义generate_stream_peft函数，该函数首先调用model.set_adapter方法，应为执行权重合并操作；-->没有定义set_adapter的地方啊
+    #    然后调用fastchat.serve.inference.py的generate_stream方法，执行yeild输出；
+    # 3. 对于非chatglm,rwforcausallm,codet5p,peft的model和model_path,直接执行fastchat.serve.inference.py的generate_stream方法 
+
+add_model_args：
+    接受parser，增加参数
+remove_parent_directory_name：
+    如果路径最后一个字符为/则返回，否则按/分割后返回最后一个元素
+
+PeftModelAdapter:
+
+# model path必须是peft模型的path，
+# 且model_path通过PeftConfig.from_pretrained加载后必须包含base_model_name_or_path
+
+# load_model:
+#   1. 调用peft的PeftConfig, PeftModel，以model_path为参数用PeftConfig加载config;
+#   2. 如果全局变量peft_share_base_weights为True，
+#       2.1 如果base_model_path在全局的peft_model_cache字典中，则从字典中取出model,tokenizer,
+#?          一， model是一个BaseModelAdapter实例，调用model.load_adapter方法重新加载model和tokenizer，-->不大可能
+#?          二，model不是一个BaseModelAdapter实例，而是hf.AutoModel实例，实例定义了load_adapter方法 -->
+#       2.2 如果base_model_path不在全局的peft_model_cache字典中，
+#           2.2.1 则调用get_model_adapter函数加载BaseModelAdapter实例，调用实例的load_adapter方法加载model, 
+#                tokenizer, 调用PeftModel.from_pretrained基于model_path合并模型，
+#           2.2.2 将合并后的模型和tokenizer添加到全局的peft_model_cache字典中。
+#   3. 如果全局变量peft_share_base_weights为False，则执行操作2.2.1 
+# get_default_conv_template:
+#   先执行2.2.1,然后调用base_model的get_default_conv_template.
 
 # 定义新的Adapter一般需要自定义load_model，match, get_default_conv_template
 # load_model需要确定AutoTokenizer,AutoModel类
 # get_default_conv_template通过get_conv_template函数加载默认模板，需要确定模板的样式
 # 自定义或者选择基样式
+
 """
 
 import math
@@ -103,14 +152,16 @@ class BaseModelAdapter:
 
 # A global registry for all model adapters
 # TODO (lmzheng): make it a priority queue.
+
 model_adapters: List[BaseModelAdapter] = []
 
-
+# 将类实例化并加入到model_adapter列表中
 def register_model_adapter(cls):
     """Register a model adapter."""
     model_adapters.append(cls())
 
-
+# Simple lightweight unbounded cache. Sometimes called "memoize".
+# 基于model_path匹配对应的BaseModelAdapter类
 @cache
 def get_model_adapter(model_path: str) -> BaseModelAdapter:
     """Get a model adapter for a model_path."""
@@ -145,7 +196,12 @@ def raise_warning_for_incompatible_cpu_offloading_configuration(
             return False
     return cpu_offloading
 
-
+# 1. 根据model_path调用get_model_adapter加载BaseModelAdapter
+# 2. 检查device,确定cpu_offload关键字的值
+# 3. 根据cpu_offload,load_8bit,gptq_config等关键字
+#    确定加载方法BaseModelAdapter.load_compress_model,BaseModelAdapter.load_model,
+#    load_gptq_quantized
+# 4. 将模型上传到对应的device上
 def load_model(
     model_path: str,
     device: str,
@@ -256,6 +312,7 @@ def load_model(
 
     return model, tokenizer
 
+# 根据模型路径获取BaseModelAdapter,调用BaseModelAdapter.get_default_conv_template
 
 def get_conversation_template(model_path: str) -> Conversation:
     """Get the default conversation template."""
@@ -263,6 +320,11 @@ def get_conversation_template(model_path: str) -> Conversation:
     return adapter.get_default_conv_template(model_path)
 
 #? model_path如果是peft模型的路径，base模型的路径在哪里定义？-> model就是已经加载好的base模型
+# 1. 根据model的类型，从fastchat.model模块中加载chatglm,rwforcausallm,codet5p的generate_stream_*方法
+# 2. 如果规定了peft_share_base_weights的值为True,且参数中model_path是peft的路径，
+#    则定义generate_stream_peft函数，该函数首先调用model.set_adapter方法，应为执行权重合并操作；
+#    然后调用fastchat.serve.inference.py的generate_stream方法，执行yeild输出；
+# 3. 对于非chatglm,rwforcausallm,codet5p,peft的model和model_path,直接执行fastchat.serve.inference.py的generate_stream方法
 def get_generate_stream_function(model: torch.nn.Module, model_path: str):
     """Get the generate_stream function for inference."""
     from fastchat.serve.inference import generate_stream
@@ -389,6 +451,21 @@ peft_model_cache = {}
 
 # model path必须是peft模型的path，
 # 且model_path通过PeftConfig.from_pretrained加载后必须包含base_model_name_or_path
+
+# load_model:
+#   1. 调用peft的PeftConfig, PeftModel，以model_path为参数用PeftConfig加载config;
+#   2. 如果全局变量peft_share_base_weights为True，
+#       2.1 如果base_model_path在全局的peft_model_cache字典中，则从字典中取出model,tokenizer,
+#?          一， model是一个BaseModelAdapter实例，调用model.load_adapter方法重新加载model和tokenizer，-->不大可能
+#?          二，model不是一个BaseModelAdapter实例，而是hf.AutoModel实例，实例定义了load_adapter方法
+#       2.2 如果base_model_path不在全局的peft_model_cache字典中，
+#           2.2.1 则调用get_model_adapter函数加载BaseModelAdapter实例，调用实例的load_adapter方法加载model, 
+#                tokenizer, 调用PeftModel.from_pretrained基于model_path合并模型，
+#           2.2.2 将合并后的模型和tokenizer添加到全局的peft_model_cache字典中。
+#   3. 如果全局变量peft_share_base_weights为False，则执行操作2.2.1 
+# get_default_conv_template:
+#   先执行2.2.1,然后调用base_model的get_default_conv_template.
+#         
 class PeftModelAdapter:
     """Loads any "peft" model and it's base model."""
 
@@ -418,7 +495,7 @@ class PeftModelAdapter:
         #  4. In get_generate_stream_function, make sure we load the right
         #  adapter before doing inference.  This *should* be safe when calls
         #  are blocked the same semaphore.
-        # 如果是全局共享的peft和base_weights，
+        # 如果是全局共享的peft_share_base_weights，
         # 且base_model_path在全局共享的peft_model_cache字典中，
         # 则直接按base_model_path加载model,tokenizer,调用model的load_adapter方法加载model权重
 
@@ -429,7 +506,7 @@ class PeftModelAdapter:
         # 如果没有全局共享peft和base_weights，则根据base_model_path加载模型的Adapter,
         # 然后调用Adapter.load_model方法加载model权重和tokenizer,再调用PeftModel
         # 合并模型权重
-        #? peft_model_cache中的model必须定义load_adapter方法
+        #? peft_model_cache中的model必须定义load_adapter方法和set_adapter方法
         if peft_share_base_weights:
             if base_model_path in peft_model_cache:
                 model, tokenizer = peft_model_cache[base_model_path]
