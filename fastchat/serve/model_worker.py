@@ -29,7 +29,7 @@ A model worker that executes the model.
 
 worker_generate_stream：
 # 用limit_worker_concurrency实例化asyncio.Semaphore，然后调用其acquire方法，使内部计数器-1
-# 调用worker的geenerate_strem_gate,
+# 调用worker的generate_stream_gate,
 # 创建一个背景任务容器，在容器中增加一个release_worker_semaphore任务
 # 调用starlette.response.StreamingResponse,StreamingResponse会
 # 先执行流式输出，进行错误处理，然后执行背景任务,即调用semaphore.release方法。

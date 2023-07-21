@@ -6,6 +6,40 @@
 
 Usage:
 python3 -m fastchat.serve.openai_api_server
+
+各种检查函数:
+check_api_key, check_model,check_length,check_requests
+
+各种处理函数：
+process_input: 将Union[str,List[str],List[List[str]]]转换为List[str]
+get_worker_address:
+# 根据model_name调用httpx.AsyncClient访问controller_address + "/get_worker_address"
+# 得到model_name对应的worker的地址
+get_conv:
+# 1. 调用get_worker_address函数获取模型对应的worker_addr,
+# 2. 根据worker_addr，model_name在全局的conv_template_map找到对话模板conv_template
+# 3. 如果全局的conv_template_map没有对应模板，则
+#    基于httpx.AsyncClient执行post，访问worker_addr + "/worker_get_conv_template"获取模板，
+#    然后加入到全局的conv_template_map中。
+get_gen_params:
+# 1. 调用get_conv函数根据model_name在全局的conv_template_map或
+#    调用get_worker_addr访问worker_addr + "/worker_get_conv_template"获取模板
+# 2. 调用conversation.py的Conversation类将模板信息抽出构造为一个Conversation实例
+# 3. 根据message的role字段更新Conversation实例，完成后调用实例的get_prompt方法得到最终的prompt
+# 4. 根据各关键词构造gen_params，更新停止词，返回gen_params.
+
+# 对话用函数
+chat_completion_stream_generator:
+
+
+接口函数：
+'v1/models'(show_available_models):
+# 使用httpx.AsyncClient()访问controller_address + "/refresh_all_workers"更新模型
+# 访问controller_address + "/list_models"列出模型
+# 以fastchat.protocol.openai_api_protocol.ModelList(ModelCard)的形式返回
+
+'/v1/chat/completions'(create_chat_completion)
+
 """
 import asyncio
 import argparse
@@ -90,7 +124,7 @@ get_bearer_token = HTTPBearer(auto_error=False)
 
 # Depends() is what FastAPI will actually use to know what is the dependency.
 # From it is that FastAPI will extract the declared parameters and that is what FastAPI will actually call.
-# 即前一个类型注释只起提示作用，Depends执行类型检查。
+# Depends先执行对应的函数，然后返回结果
 
 # 检查AppSettings().api_keys列表中是否不为空，参数auth是否不为空，auth.credentials是否在全局的AppSettings().api_keys列表中，
 # 若AppSettings().api_keys列表中不为空，且检查通过，返回token,若不通过抛出错误，若列表为空，则返回None
@@ -244,7 +278,11 @@ def process_input(model_name:str, inp:Union[str,List[str],List[List[str]]])-> Li
 
     return inp
 
-# 1. 调用
+# 1. 调用get_conv函数根据model_name在全局的conv_template_map或
+#    调用get_worker_addr访问worker_addr + "/worker_get_conv_template"获取模板
+# 2. 调用conversation.py的Conversation类将模板信息抽出构造为一个Conversation实例
+# 3. 根据message的role字段更新Conversation实例，完成后调用实例的get_prompt方法得到最终的prompt
+# 4. 根据各关键词构造gen_params，更新停止词，返回gen_params.
 async def get_gen_params(
     model_name: str,
     messages: Union[str, List[Dict[str, str]]],
@@ -310,7 +348,8 @@ async def get_gen_params(
     logger.debug(f"==== request ====\n{gen_params}")
     return gen_params
 
-
+# 1.根据model_name调用httpx.AsyncClient访问controller_address + "/get_worker_address"
+#   得到model_name对应的worker的地址
 async def get_worker_address(model_name: str, client: httpx.AsyncClient) -> str:
     """
     Get worker address based on the requested model
@@ -333,8 +372,12 @@ async def get_worker_address(model_name: str, client: httpx.AsyncClient) -> str:
     logger.debug(f"model_name: {model_name}, worker_addr: {worker_addr}")
     return worker_addr
 
-# 调用get_worker_address函数获取模型对应的worker_addr,
-# 
+# httpx.AsyncClient: An asynchronous HTTP client, with connection pooling, HTTP/2, redirects, cookie persistence, etc.
+# 1. 调用get_worker_address函数获取模型对应的worker_addr,
+# 2. 根据worker_addr，model_name在全局的conv_template_map找到对话模板conv_template
+# 3. 如果全局的conv_template_map没有对应模板，则
+#    基于httpx.AsyncClient执行post，访问worker_addr + "/worker_get_conv_template"获取模板，
+#    然后加入到全局的conv_template_map中。
 async def get_conv(model_name: str):
     controller_address = app_settings.controller_address
     async with httpx.AsyncClient() as client:
@@ -351,7 +394,9 @@ async def get_conv(model_name: str):
             conv_template_map[(worker_addr, model_name)] = conv_template
         return conv_template
 
-
+# 使用httpx.AsyncClient()访问controller_address + "/refresh_all_workers"更新模型
+# 访问controller_address + "/list_models"列出模型
+# 以fastchat.protocol.openai_api_protocol.ModelList(ModelCard)的形式返回
 @app.get("/v1/models", dependencies=[Depends(check_api_key)])
 async def show_available_models():
     controller_address = app_settings.controller_address
@@ -366,7 +411,8 @@ async def show_available_models():
         model_cards.append(ModelCard(id=m, root=m, permission=[ModelPermission()]))
     return ModelList(data=model_cards)
 
-
+# 1. 调用check_mdoel检查模型,check_requests检查requests,get_gen_params构造生成参数，check_length检查文本长度
+# 2. 
 @app.post("/v1/chat/completions", dependencies=[Depends(check_api_key)])
 async def create_chat_completion(request: ChatCompletionRequest):
     """Creates a completion for the chat message"""
@@ -426,7 +472,16 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     return ChatCompletionResponse(model=request.model, choices=choices, usage=usage)
 
+# 1. 调用fastchat.protocol.openai_api_protocol.ChatCompletionResponseStreamChoice构造choice_data,
+# 2. 基于choice_data调用fastchat.protocol.openai_api_protocol.ChatCompletionStreamResponse构造chunk
+# 3. 调用generate_completion_stream访问对应worker的generate_stream_gate方法得到一个生成器response，
+#    response.aiter_raw方法yield内容，# 
+# 4. 如果yield的输出无误，则正常返回
+# 5. 如果有误，则找出新增文本,  用CompletionResponseStreamChoice，CompletionStreamResponse组装新增文本，
+#    如果新增文本不为空，则yield结果，如果新增文本为空，则将组装数据计入到finish_stream_events并最终yield结果。
+# 6. 最后yield "data: [DONE]\n\n".
 
+#* 与generate_completion_stream_generator几乎完全一致。
 async def chat_completion_stream_generator(
     model_name: str, gen_params: Dict[str, Any], n: int
 ) -> Generator[str, Any, None]:
@@ -478,7 +533,7 @@ async def chat_completion_stream_generator(
         yield f"data: {finish_chunk.json(exclude_none=True, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
-
+# 
 @app.post("/v1/completions", dependencies=[Depends(check_api_key)])
 async def create_completion(request: CompletionRequest):
     error_check_ret = await check_model(request)
@@ -541,7 +596,13 @@ async def create_completion(request: CompletionRequest):
             model=request.model, choices=choices, usage=UsageInfo.parse_obj(usage)
         )
 
-
+# 1. 根据request的prompt字段调用get_gen_params构造生成参数
+# 2. 调用generate_completion_stream函数，该函数会最终访问worker_addr + "/worker_generate_stream"
+#    调用model_worker.py对应worker的generate_stream_gate方法得到一个生成器response并yield输出
+# 3. 如果yield的输出无误，则正常返回
+# 4. 如果有误，则找出新增文本,  用CompletionResponseStreamChoice，CompletionStreamResponse组装新增文本，
+#    如果新增文本不为空，则yield结果，如果新增文本为空，则将组装数据计入到finish_stream_events并最终yield结果。
+# 5. 最后yield "data: [DONE]\n\n".
 async def generate_completion_stream_generator(request: CompletionRequest, n: int):
     model_name = request.model
     id = f"cmpl-{shortuuid.random()}"
@@ -590,7 +651,10 @@ async def generate_completion_stream_generator(request: CompletionRequest, n: in
         yield f"data: {finish_chunk.json(exclude_unset=True, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
-
+# 1. 调用get_worker_address访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr + "/worker_generate_stream",
+#    该访问会调用model_worker.py对应worker的generate_stream_gate方法得到一个生成器response
+# 3. response.aiter_raw方法yield内容
 async def generate_completion_stream(payload: Dict[str, Any]):
     controller_address = app_settings.controller_address
     async with httpx.AsyncClient() as client:
