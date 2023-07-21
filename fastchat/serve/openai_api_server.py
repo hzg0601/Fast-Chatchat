@@ -11,16 +11,20 @@ python3 -m fastchat.serve.openai_api_server
 check_api_key, check_model,check_length,check_requests
 
 各种处理函数：
-process_input: 将Union[str,List[str],List[List[str]]]转换为List[str]
+process_input: 
+将Union[str,List[str],List[List[str]]]转换为List[str]
+
 get_worker_address:
 # 根据model_name调用httpx.AsyncClient访问controller_address + "/get_worker_address"
 # 得到model_name对应的worker的地址
+
 get_conv:
 # 1. 调用get_worker_address函数获取模型对应的worker_addr,
 # 2. 根据worker_addr，model_name在全局的conv_template_map找到对话模板conv_template
 # 3. 如果全局的conv_template_map没有对应模板，则
 #    基于httpx.AsyncClient执行post，访问worker_addr + "/worker_get_conv_template"获取模板，
 #    然后加入到全局的conv_template_map中。
+
 get_gen_params:
 # 1. 调用get_conv函数根据model_name在全局的conv_template_map或
 #    调用get_worker_addr访问worker_addr + "/worker_get_conv_template"获取模板
@@ -30,7 +34,31 @@ get_gen_params:
 
 # 对话用函数
 chat_completion_stream_generator:
+# 1. 调用fastchat.protocol.openai_api_protocol.ChatCompletionResponseStreamChoice构造choice_data,
+# 2. 基于choice_data调用fastchat.protocol.openai_api_protocol.ChatCompletionStreamResponse构造chunk
+# 3. 调用generate_completion_stream访问对应worker的generate_stream_gate方法得到一个生成器response，
+#    response.aiter_raw方法yield内容，# 
+# 4. 如果yield的输出无误，则正常返回
+# 5. 如果有误，则找出新增文本,  用CompletionResponseStreamChoice，CompletionStreamResponse组装新增文本，
+#    如果新增文本不为空，则yield结果，如果新增文本为空，则将组装数据计入到finish_stream_events并最终yield结果。
+# 6. 最后yield "data: [DONE]\n\n".
 
+generate_completion_stream_generator：
+与chat_completion_stream_generator几乎完全一致。
+
+generate_completion_stream：
+# 1. 调用get_worker_address访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr + "/worker_generate_stream",
+#    该访问会调用model_worker.py对应worker的generate_stream_gate方法得到一个生成器response
+# 3. response.aiter_raw方法yield内容
+
+generate_completion：
+# 1. 调用get_worker_address，访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr + "/worker_generate"得到输出
+
+get_embedding:
+# 1. 调用get_worker_address访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr + "/worker_get_embedding"调用model_worker.py的函数得到输出
 
 接口函数：
 'v1/models'(show_available_models):
@@ -39,6 +67,32 @@ chat_completion_stream_generator:
 # 以fastchat.protocol.openai_api_protocol.ModelList(ModelCard)的形式返回
 
 '/v1/chat/completions'(create_chat_completion)
+# 1. 调用check_mdoel检查模型,check_requests检查requests,get_gen_params构造生成参数，check_length检查文本长度
+# 2. 如果request.stream为True,则调用chat_completion_stream_generator，得到输出的生成器，以生成器初始化StreamingResponse返回结果
+# 3. 如果不是stream模式，则以asyncio.create_task(generate_completion(gen_params))得到所有结果，调用asyncio.gather获取全部对话
+#    遍历全部对话，以对话内容为主体构造ChatCompletionResponseChoice实例，装入choices中，用ChatCompletionResponse封装choices并返回。
+
+"/v1/completions"（create_completion）
+# 与`chat/completions`几乎一致，只是：
+# 1. gen_params的位置放在request.stream判断之后，
+# 2. CompletionResponseChoice的构造使用了参数logprobs=content.get("logprobs", None)
+# 3. usage 改为了UsageInfo.parse_obj(usage)
+
+"/v1/embeddings"（create_embedding）
+"/v1/engines/{model_name}/embeddings"（create_embedding）
+
+# 1. 执行check_model, process_input等处理和检查,调用get_embedding函数
+#   访问worker_addr + "/worker_get_embedding"调用model_worker.py的函数得到输出
+# 2. 如果返回错误，执行错误处理；否则，调用EmbeddingsResponse返回结果
+
+"/api/v1/token_check"(count_tokens):
+# 1. 调用get_worker_address访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr +model_details/count_token得到context_length、count
+# 3. 判断输入token是否超限，返回APITokenCheckResponse类。
+
+"/api/v1/chat/completions"(create_chat_completion)
+# 与'chat/completions'完全一致
+
 
 """
 import asyncio
@@ -412,7 +466,9 @@ async def show_available_models():
     return ModelList(data=model_cards)
 
 # 1. 调用check_mdoel检查模型,check_requests检查requests,get_gen_params构造生成参数，check_length检查文本长度
-# 2. 
+# 2. 如果request.stream为True,则调用chat_completion_stream_generator，得到输出的生成器，以生成器初始化StreamingResponse返回结果
+# 3. 如果不是stream模式，则以asyncio.create_task(generate_completion(gen_params))得到所有结果，调用asyncio.gather获取全部对话
+#    遍历全部对话，以对话内容为主体构造ChatCompletionResponseChoice实例，装入choices中，用ChatCompletionResponse封装choices并返回。
 @app.post("/v1/chat/completions", dependencies=[Depends(check_api_key)])
 async def create_chat_completion(request: ChatCompletionRequest):
     """Creates a completion for the chat message"""
@@ -533,7 +589,10 @@ async def chat_completion_stream_generator(
         yield f"data: {finish_chunk.json(exclude_none=True, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
-# 
+# 与`chat/completions`基本一致，只是：
+# 1. gen_params的位置放在request.stream判断之后，
+# 2. CompletionResponseChoice的构造使用了参数logprobs=content.get("logprobs", None)
+# 3. usage 改为了UsageInfo.parse_obj(usage)
 @app.post("/v1/completions", dependencies=[Depends(check_api_key)])
 async def create_completion(request: CompletionRequest):
     error_check_ret = await check_model(request)
@@ -675,7 +734,8 @@ async def generate_completion_stream(payload: Dict[str, Any]):
                     data = json.loads(chunk.decode())
                     yield data
 
-
+# 1. 调用get_worker_address，访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr + "/worker_generate"得到输出
 async def generate_completion(payload: Dict[str, Any]):
     async with httpx.AsyncClient() as client:
         worker_addr = await get_worker_address(payload["model"], client)
@@ -689,7 +749,10 @@ async def generate_completion(payload: Dict[str, Any]):
         completion = response.json()
         return completion
 
-
+# 两个接口同一个函数
+# 1. 执行check_model, process_input等处理和检查,调用get_embedding函数
+#   访问worker_addr + "/worker_get_embedding"调用model_worker.py的函数得到输出
+# 2. 如果返回错误，执行错误处理；否则，调用EmbeddingsResponse返回结果
 @app.post("/v1/embeddings", dependencies=[Depends(check_api_key)])
 @app.post("/v1/engines/{model_name}/embeddings", dependencies=[Depends(check_api_key)])
 async def create_embeddings(request: EmbeddingsRequest, model_name: str = None):
@@ -736,7 +799,8 @@ async def create_embeddings(request: EmbeddingsRequest, model_name: str = None):
         ),
     ).dict(exclude_none=True)
 
-
+# 1. 调用get_worker_address访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr + "/worker_get_embedding"调用model_worker.py的函数得到输出
 async def get_embedding(payload: Dict[str, Any]):
     controller_address = app_settings.controller_address
     model_name = payload["model"]
@@ -755,7 +819,9 @@ async def get_embedding(payload: Dict[str, Any]):
 
 ### GENERAL API - NOT OPENAI COMPATIBLE ###
 
-
+# 1. 调用get_worker_address访问controller_address + "/get_worker_address"得到model对应的地址
+# 2. 根据地址调用httpx.AsyncClient.stream，访问worker_addr +model_details/count_token得到context_length、count
+# 3. 判断输入token是否超限，返回APITokenCheckResponse类。
 @app.post("/api/v1/token_check")
 async def count_tokens(request: APITokenCheckRequest):
     """
@@ -795,7 +861,7 @@ async def count_tokens(request: APITokenCheckRequest):
 
     return APITokenCheckResponse(prompts=checkedList)
 
-
+# 与chat/completions应完全一致
 @app.post("/api/v1/chat/completions")
 async def create_chat_completion(request: APIChatCompletionRequest):
     """Creates a completion for the chat message"""

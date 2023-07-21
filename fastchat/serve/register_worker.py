@@ -3,6 +3,7 @@ Manually register workers.
 
 Usage:
 python3 -m fastchat.serve.register_worker --controller http://localhost:21001 --worker-name http://localhost:21002
+访问controller_address + "/register_worker"方法，检查worker是否启动
 """
 
 import argparse
