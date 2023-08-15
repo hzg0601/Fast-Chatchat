@@ -97,7 +97,7 @@ def apply_compressed_weight(module, compressed_state_dict, target_device, prefix
                 CLinear(
                     compressed_state_dict[full_name], 
                     target_attr.bias, 
-                    compressed_state_dict[full_name].device
+                    compressed_state_dict[full_name][0].device
                 ),
             )
     for name, child in module.named_children():
