@@ -112,6 +112,7 @@ def load_compress_model(model_path:str,
                         torch_dtype:torch.dtype=torch.float32, 
                         use_fast:bool=True, 
                         revision="main"):
+    print("Loading and compressing model...")
     # partially load model
     # `use_fast=True`` is not supported for some models.
     # 1. 加载tokenizer
@@ -223,7 +224,7 @@ def load_compress_model(model_path:str,
         model.half()
     model.to(device)
     model.eval()
-
+    print("Loading and compressing model done.")
     return model, tokenizer
 
 
