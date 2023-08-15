@@ -80,6 +80,11 @@ def get_compressed_list(module, prefix=""):
 
 
 def apply_compressed_weight(module, compressed_state_dict, target_device, prefix=""):
+    """
+    1. 针对empty_model的每个子block,先取出该block，命名为target_attr
+    2. 如果target_attr为一个线性层，将该层设为一个CLinear
+    3. 针对该层的每个子层都执行如上操作
+    """
     for attr_str in dir(module):
         target_attr = getattr(module, attr_str)
         if type(target_attr) == torch.nn.Linear:
@@ -90,7 +95,9 @@ def apply_compressed_weight(module, compressed_state_dict, target_device, prefix
                 module,
                 attr_str,
                 CLinear(
-                    compressed_state_dict[full_name], target_attr.bias, target_device
+                    compressed_state_dict[full_name], 
+                    target_attr.bias, 
+                    compressed_state_dict[full_name].device
                 ),
             )
     for name, child in module.named_children():
@@ -107,6 +114,7 @@ def load_compress_model(model_path:str,
                         revision="main"):
     # partially load model
     # `use_fast=True`` is not supported for some models.
+    # 1. 加载tokenizer
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             model_path, use_fast=use_fast, revision=revision, trust_remote_code=True
@@ -115,6 +123,7 @@ def load_compress_model(model_path:str,
         tokenizer = AutoTokenizer.from_pretrained(
             model_path, use_fast=~use_fast, revision=revision, trust_remote_code=True
         )
+    # 2. 以无权重的方式加载model
     with init_empty_weights():
         # `trust_remote_code` should be set as `True` for both AutoConfig and AutoModel
         config = AutoConfig.from_pretrained(
@@ -140,6 +149,7 @@ def load_compress_model(model_path:str,
                                            no_split_module_classes=model._no_split_modules)
         
         linear_weights = get_compressed_list(model)
+    # 3. 如果本地没有检查点，下载检查点
     if os.path.exists(model_path):
         # `model_path` is a local folder
         base_pattern = os.path.join(model_path, "pytorch_model*.bin")
@@ -167,33 +177,38 @@ def load_compress_model(model_path:str,
         else:
             model_path = snapshot_download(model_path, revision=revision)
         base_pattern = os.path.join(model_path, "pytorch_model*.bin")
-
+    # 4. 读取检查点文件名
     files = glob.glob(base_pattern)
     if len(files) == 0:
         raise ValueError(
             f"Cannot find any model weight files. "
             f"Please check your (cached) weight path: {model_path}"
         )
-
+    # 5. 针对每个检查点，先加载该检查点，针对该检查点的每一层，
+    # 如果该层是线性层，则将该层发送到指定设备，并执行量化操作；
+    # 否则，将其发送到指定设备
+    # 发送完成后，初始化检查点的层字典，清除显存缓存；
     compressed_state_dict = {}
     for filename in tqdm(files):
         tmp_state_dict = torch.load(filename, map_location=lambda storage, loc: storage)
         for name in tmp_state_dict:
+            device_rank = get_sublayer_device(device_map=device_map,layer_name=name)
+            device_rank = f"cuda:{device_rank}"
             if name in linear_weights:
-                device_rank = get_sublayer_device(device_map=device_map,layer_name=name)
-                device_rank = f"cuda:{device_rank}"
                 tensor = tmp_state_dict[name].to(device_rank).data.to(torch_dtype)
                 compressed_state_dict[name] = compress(
                     tensor, default_compression_config
                 )
             else:
-                compressed_state_dict[name] = tmp_state_dict[name].to(device)
+                compressed_state_dict[name] = tmp_state_dict[name].to(device_rank)
             tmp_state_dict[name] = None
             tensor = None
             gc.collect()
             torch.cuda.empty_cache()
             if device == "xpu":
                 torch.xpu.empty_cache()
+    # 6. 针对empty_model的state_dict的每一层，如果该层不是线性层，则将层发送到指定设定上
+    # 并将模型的层与检查点的权重对应起来
 
     for name in model.state_dict():
         if name not in linear_weights:
