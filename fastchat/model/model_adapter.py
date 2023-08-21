@@ -278,6 +278,8 @@ def load_model(
                 device=device,
                 torch_dtype=kwargs["torch_dtype"],
                 revision=revision,
+                num_gpus=num_gpus,
+                max_gpu_memory=max_gpu_memory
             )
     elif gptq_config and gptq_config.wbits < 16:
         model, tokenizer = load_gptq_quantized(model_path, gptq_config)

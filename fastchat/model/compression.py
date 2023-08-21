@@ -111,7 +111,9 @@ def load_compress_model(model_path:str,
                         device:str="cuda", 
                         torch_dtype:torch.dtype=torch.float32, 
                         use_fast:bool=True, 
-                        revision="main"):
+                        revision="main",
+                        num_gpus=num_gpus,
+                        max_gpu_memory="20GiB"):
     print("Loading and compressing model...")
     # partially load model
     # `use_fast=True`` is not supported for some models.
@@ -140,14 +142,26 @@ def load_compress_model(model_path:str,
             model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
         except NameError:
             model = AutoModel.from_config(config, trust_remote_code=True)
-        balaced_memory = get_balanced_memory(model,
-                                             dtype=torch_dtype,
-                                             low_zero=False,
-                                             no_split_module_classes=model._no_split_modules)
-        device_map = infer_auto_device_map(model,
-                                           dtype=torch_dtype,
-                                           max_memory=balaced_memory,
-                                           no_split_module_classes=model._no_split_modules)
+        if not max_gpu_memory:
+            max_memory = get_balanced_memory(
+                model,
+                dtype=torch_dtype,
+                low_zero=False,
+                no_split_module_classes=model._no_split_modules,
+            )
+        else:
+            import re
+            import psutil
+
+            gbit = int(float(re.search("[0-9]+", max_gpu_memory).group(0)) * 1024**3)
+            max_memory = {i: gbit for i in range(num_gpus)}
+            max_memory["cpu"] = psutil.virtual_memory().available
+        device_map = infer_auto_device_map(
+            model,
+            dtype=torch_dtype,
+            max_memory=max_memory,
+            no_split_module_classes=model._no_split_modules,
+        )
         
         linear_weights = get_compressed_list(model)
     # 3. 如果本地没有检查点，下载检查点
